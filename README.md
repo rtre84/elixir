@@ -27,6 +27,7 @@ First, [install Erlang](https://elixir-lang.org/install.html#installing-erlang).
 ```sh
 git clone https://github.com/elixir-lang/elixir.git
 cd elixir
+git checkout v1.8
 make clean test
 ```
 
