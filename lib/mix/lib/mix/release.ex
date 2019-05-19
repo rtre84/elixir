@@ -81,9 +81,8 @@ defmodule Mix.Release do
       |> Keyword.merge(overrides)
 
     {include_erts, opts} = Keyword.pop(opts, :include_erts, true)
-    {erts_source, erts_version} = erts_data(include_erts)
+    {erts_source, erts_lib_dir, erts_version} = erts_data(include_erts)
 
-    erts_lib_dir = :code.lib_dir()
     loaded_apps = apps |> Keyword.keys() |> load_apps(%{}, erts_lib_dir)
 
     # Make sure IEx is either an active part of the release or add it as none.
@@ -211,18 +210,19 @@ defmodule Mix.Release do
   end
 
   defp erts_data(false) do
-    {nil, :erlang.system_info(:version)}
+    {nil, :code.lib_dir(), :erlang.system_info(:version)}
   end
 
   defp erts_data(true) do
     version = :erlang.system_info(:version)
-    {:filename.join(:code.root_dir(), 'erts-#{version}'), version}
+    {:filename.join(:code.root_dir(), 'erts-#{version}'), :code.lib_dir(), version}
   end
 
   defp erts_data(erts_source) when is_binary(erts_source) do
     if File.exists?(erts_source) do
       [_, erts_version] = erts_source |> Path.basename() |> String.split("-")
-      {to_charlist(erts_source), to_charlist(erts_version)}
+      erts_lib_dir = erts_source |> Path.dirname() |> Path.join("lib") |> to_charlist()
+      {to_charlist(erts_source), erts_lib_dir, to_charlist(erts_version)}
     else
       Mix.raise("Could not find ERTS system at #{inspect(erts_source)}")
     end
@@ -237,21 +237,29 @@ defmodule Mix.Release do
   end
 
   defp load_app(app, seen, otp_root) do
-    case :code.lib_dir(app) do
-      {:error, :bad_name} ->
-        Mix.raise("Could not find application #{inspect(app)}")
+    path = Path.join(otp_root, "#{app}-*")
 
-      path ->
-        case :file.consult(Path.join(path, "ebin/#{app}.app")) do
-          {:ok, terms} ->
-            [{:application, ^app, properties}] = terms
-            otp_app? = List.starts_with?(path, otp_root)
-            seen = Map.put(seen, app, [path: path, otp_app?: otp_app?] ++ properties)
-            load_apps(Keyword.get(properties, :applications, []), seen, otp_root)
-
-          {:error, reason} ->
-            Mix.raise("Could not load #{app}.app. Reason: #{inspect(reason)}")
+    case Path.wildcard(path) do
+      [] ->
+        case :code.lib_dir(app) do
+          {:error, :bad_name} -> Mix.raise("Could not find application #{inspect(app)}")
+          path -> do_load_app(app, path, seen, otp_root, false)
         end
+
+      [path] ->
+        do_load_app(app, to_charlist(path), seen, otp_root, true)
+    end
+  end
+
+  defp do_load_app(app, path, seen, otp_root, otp_app?) do
+    case :file.consult(Path.join(path, "ebin/#{app}.app")) do
+      {:ok, terms} ->
+        [{:application, ^app, properties}] = terms
+        seen = Map.put(seen, app, [path: path, otp_app?: otp_app?] ++ properties)
+        load_apps(Keyword.get(properties, :applications, []), seen, otp_root)
+
+      {:error, reason} ->
+        Mix.raise("Could not load #{app}.app. Reason: #{inspect(reason)}")
     end
   end
 
@@ -401,7 +409,14 @@ defmodule Mix.Release do
       File.write!(path <> ".rel", consultable("rel", rel_spec))
 
       sys_path = String.to_charlist(path)
-      sys_options = [:silent, :no_dot_erlang, :no_warn_sasl, variables: build_variables(release)]
+
+      sys_options = [
+        :silent,
+        :no_dot_erlang,
+        :no_warn_sasl,
+        variables: build_variables(release),
+        path: build_paths(release)
+      ]
 
       case :systools.make_script(sys_path, sys_options) do
         {:ok, _module, _warnings} ->
@@ -429,6 +444,12 @@ defmodule Mix.Release do
         not Keyword.fetch!(properties, :otp_app?),
         uniq: true,
         do: {'RELEASE_LIB', properties |> Keyword.fetch!(:path) |> :filename.dirname()}
+  end
+
+  defp build_paths(release) do
+    for {_, properties} <- release.applications,
+        Keyword.fetch!(properties, :otp_app?),
+        do: properties |> Keyword.fetch!(:path) |> Path.join("ebin") |> to_charlist()
   end
 
   defp build_release_spec(release, modes) do

@@ -146,6 +146,16 @@ defmodule Mix.Tasks.Test do
 
       mix test test/some/particular/file_test.exs
 
+  Tests in umbrella projects can be run from the root by specifying
+  the full suite path, including `apps/my_app/test`, in which case
+  recursive tests for other child apps will be skipped completely:
+
+      # To run all tests for my_app from the umbrella root
+      mix test apps/my_app/test
+
+      # To run a given test file on my_app from the umbrella root
+      mix test apps/my_app/test/some/particular/file_test.exs
+
   ## Command line options
 
     * `--color` - enables color in the output
@@ -327,6 +337,36 @@ defmodule Mix.Tasks.Test do
   def run(args) do
     {opts, files} = OptionParser.parse!(args, strict: @switches)
 
+    if not Mix.Task.recursing?() do
+      do_run(opts, args, files)
+    else
+      {files_in_apps_path, files_not_in_apps_path} =
+        Enum.split_with(files, &String.starts_with?(&1, "apps/"))
+
+      app = Mix.Project.config()[:app]
+      current_app_path = "apps/#{app}/"
+
+      files_in_current_app_path =
+        for file <- files_in_apps_path,
+            String.starts_with?(file, current_app_path) or not relative_app_file_exists?(file),
+            do: String.trim_leading(file, current_app_path)
+
+      files = files_in_current_app_path ++ files_not_in_apps_path
+
+      if files == [] and files_in_apps_path != [] do
+        :ok
+      else
+        do_run([test_location_relative_path: "apps/#{app}"] ++ opts, args, files)
+      end
+    end
+  end
+
+  defp relative_app_file_exists?(file) do
+    {file, _} = ExUnit.Filters.parse_path(file)
+    File.exists?(Path.join("../..", file))
+  end
+
+  defp do_run(opts, args, files) do
     if opts[:listen_on_stdin] do
       System.at_exit(fn _ ->
         IO.gets(:stdio, "")
@@ -467,7 +507,8 @@ defmodule Mix.Tasks.Test do
     :colors,
     :slowest,
     :failures_manifest_file,
-    :only_test_ids
+    :only_test_ids,
+    :test_location_relative_path
   ]
 
   @doc false
