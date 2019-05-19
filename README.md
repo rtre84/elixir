@@ -20,6 +20,7 @@ To run Elixir from source, clone this repository to your machine, compile and te
 ```sh
 git clone https://github.com/elixir-lang/elixir.git
 cd elixir
+git checkout v1.8
 make clean test
 ```
 
