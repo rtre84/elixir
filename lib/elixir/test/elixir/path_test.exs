@@ -2,34 +2,40 @@ Code.require_file("test_helper.exs", __DIR__)
 
 defmodule PathTest do
   use ExUnit.Case, async: true
-
   doctest Path
 
-  import PathHelpers
-
   if :file.native_name_encoding() == :utf8 do
-    test "wildcard with UTF-8" do
-      File.mkdir_p(tmp_path("héllò"))
-      assert Path.wildcard(tmp_path("héllò")) == [tmp_path("héllò")]
+    @tag :tmp_dir
+    test "wildcard with UTF-8", config do
+      File.mkdir_p(Path.join(config.tmp_dir, "héllò"))
+
+      assert Path.wildcard(Path.join(config.tmp_dir, "héllò")) ==
+               [Path.join(config.tmp_dir, "héllò")]
     after
-      File.rm_rf(tmp_path("héllò"))
+      File.rm_rf(Path.join(config.tmp_dir, "héllò"))
     end
   end
 
-  test "wildcard/2" do
-    hello = tmp_path("wildcard/.hello")
-    world = tmp_path("wildcard/.hello/world")
+  @tag :tmp_dir
+  test "wildcard/2", config do
+    hello = Path.join(config.tmp_dir, "wildcard/.hello")
+    world = Path.join(config.tmp_dir, "wildcard/.hello/world")
     File.mkdir_p(world)
 
-    assert Path.wildcard(tmp_path("wildcard/*/*")) == []
-    assert Path.wildcard(tmp_path("wildcard/**/*")) == []
-    assert Path.wildcard(tmp_path("wildcard/?hello/world")) == []
+    assert Path.wildcard(Path.join(config.tmp_dir, "wildcard/*/*")) == []
+    assert Path.wildcard(Path.join(config.tmp_dir, "wildcard/**/*")) == []
+    assert Path.wildcard(Path.join(config.tmp_dir, "wildcard/?hello/world")) == []
 
-    assert Path.wildcard(tmp_path("wildcard/*/*"), match_dot: true) == [world]
-    assert Path.wildcard(tmp_path("wildcard/**/*"), match_dot: true) == [hello, world]
-    assert Path.wildcard(tmp_path("wildcard/?hello/world"), match_dot: true) == [world]
+    assert Path.wildcard(Path.join(config.tmp_dir, "wildcard/*/*"), match_dot: true) ==
+             [world]
+
+    assert Path.wildcard(Path.join(config.tmp_dir, "wildcard/**/*"), match_dot: true) ==
+             [hello, world]
+
+    assert Path.wildcard(Path.join(config.tmp_dir, "wildcard/?hello/world"), match_dot: true) ==
+             [world]
   after
-    File.rm_rf(tmp_path("wildcard"))
+    File.rm_rf(Path.join(config.tmp_dir, "wildcard"))
   end
 
   test "wildcard/2 raises on null byte" do
@@ -38,6 +44,13 @@ defmodule PathTest do
 
   describe "Windows" do
     @describetag :windows
+
+    test "absname/1" do
+      assert Path.absname("//host/path") == "//host/path"
+      assert Path.absname("\\\\host\\path") == "//host/path"
+      assert Path.absname("\\/host\\path") == "//host/path"
+      assert Path.absname("/\\host\\path") == "//host/path"
+    end
 
     test "relative/1" do
       assert Path.relative("C:/usr/local/bin") == "usr/local/bin"
@@ -67,6 +80,11 @@ defmodule PathTest do
       assert Path.type("/usr/local/bin") == :volumerelative
       assert Path.type('usr/local/bin') == :relative
       assert Path.type("../usr/local/bin") == :relative
+
+      assert Path.type("//host/path") == :absolute
+      assert Path.type("\\\\host\\path") == :absolute
+      assert Path.type("/\\host\\path") == :absolute
+      assert Path.type("\\/host\\path") == :absolute
     end
 
     test "split/1" do
@@ -135,9 +153,9 @@ defmodule PathTest do
 
     assert Path.expand("~/file") == Path.join(home, "file")
     assert Path.expand("~/file", "whatever") == Path.join(home, "file")
-    assert Path.expand("file", Path.expand("~")) == Path.expand("~/file")
+    assert Path.expand("file", Path.expand("~")) == Path.join(home, "file")
     assert Path.expand("file", "~") == Path.join(home, "file")
-    assert Path.expand("~file") == Path.join(File.cwd!(), "file")
+    assert Path.expand("~file") == Path.join(File.cwd!(), "~file")
   end
 
   test "expand/1,2" do
@@ -226,6 +244,7 @@ defmodule PathTest do
     assert Path.join([""]) == ""
     assert Path.join(["foo"]) == "foo"
     assert Path.join(["/", "foo", "bar"]) == "/foo/bar"
+    assert Path.join(["/", "foo", "bar", "/"]) == "/foo/bar"
     assert Path.join(["~", "foo", "bar"]) == "~/foo/bar"
     assert Path.join(['/foo/', "/bar/"]) == "/foo/bar"
     assert Path.join(["/", ""]) == "/"
@@ -248,6 +267,9 @@ defmodule PathTest do
     assert Path.join("/foo", "/bar") == "/foo/bar"
     assert Path.join("/foo", "./bar") == "/foo/./bar"
 
+    assert Path.join("/foo", "/") == "/foo"
+    assert Path.join("/foo", "/bar/zar/") == "/foo/bar/zar"
+
     assert Path.join([?/, "foo"], "./bar") == "/foo/./bar"
     assert Path.join(["/foo", "bar"], ["fiz", "buz"]) == "/foobar/fizbuz"
   end
@@ -259,7 +281,7 @@ defmodule PathTest do
     assert Path.split([?/, "foo/bar"]) == ["/", "foo", "bar"]
   end
 
-  if windows?() do
+  if PathHelpers.windows?() do
     defp strip_drive_letter_if_windows([_d, ?: | rest]), do: rest
     defp strip_drive_letter_if_windows(<<_d, ?:, rest::binary>>), do: rest
   else

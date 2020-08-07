@@ -37,9 +37,10 @@ defmodule Regex do
 
   The modifiers available when creating a Regex are:
 
-    * `unicode` (u) - enables Unicode specific patterns like `\p` and change
-      modifiers like `\w`, `\W`, `\s` and friends to also match on Unicode.
-      It expects valid Unicode strings to be given on match
+    * `unicode` (u) - enables Unicode specific patterns like `\p` and causes
+      character classes like `\w`, `\W`, `\s`, etc. to also match on Unicode
+      (see examples below in "Character classes"). It expects valid Unicode
+      strings to be given on match
 
     * `caseless` (i) - adds case insensitivity
 
@@ -86,7 +87,8 @@ defmodule Regex do
 
     * `:none` - does not return matching subpatterns at all
 
-    * `:all_names` - captures all names in the Regex
+    * `:all_names` - captures all named subpattern matches in the Regex as a list
+      ordered **alphabetically** by the names of the subpatterns
 
     * `list(binary)` - a list of named captures to capture
 
@@ -124,21 +126,26 @@ defmodule Regex do
       false
       iex> String.match?("josé", ~r/^[[:lower:]]+$/u)
       true
+      iex> Regex.replace(~r/\s/, "Unicode\u00A0spaces", "-")
+      "Unicode spaces"
+      iex> Regex.replace(~r/\s/u, "Unicode\u00A0spaces", "-")
+      "Unicode-spaces"
 
   ## Precompilation
 
   Regular expressions built with sigil are precompiled and stored in `.beam`
-  files. Precompiled regexes are not guaranteed to be compatible between OSes
-  and OTP releases. This is rarely a problem, as most Elixir code shared
-  during development is compiled on the target (such as dependencies, archives,
-  and escripts) and, when running in production, the code must either be
-  compiled on the target (via `mix compile` or similar) or released on the
-  host (via `mix releases` or similar) with a matching OTP, OS and architecture
-  as as the target.
+  files. Precompiled regexes will be checked in runtime and may work slower
+  between operating systems and OTP releases. This is rarely a problem, as most Elixir code
+  shared during development is compiled on the target (such as dependencies,
+  archives, and escripts) and, when running in production, the code must either
+  be compiled on the target (via `mix compile` or similar) or released on the
+  host (via `mix releases` or similar) with a matching OTP, operating system
+  and architecture as the target.
 
-  However, if you find yourself in a scenario where cross-compilation is
-  necessary, you can manually invoke `Regex.recompile/1` or `Regex.recompile!/1`
-  to perform a runtime version check and recompile the regex if necessary.
+  If you know you are running on a different system than the current one and
+  you are doing multiple matches with the regex, you can manually invoke
+  `Regex.recompile/1` or `Regex.recompile!/1` to perform a runtime version
+  check and recompile the regex if necessary.
   """
 
   defstruct re_pattern: nil, source: "", opts: "", re_version: ""
@@ -216,7 +223,7 @@ defmodule Regex do
   and recompiles the regex in case of version mismatch.
   """
   @doc since: "1.4.0"
-  @spec recompile(t) :: t
+  @spec recompile(t) :: {:ok, t} | {:error, any}
   def recompile(%Regex{} = regex) do
     version = version()
 
@@ -264,8 +271,8 @@ defmodule Regex do
 
   """
   @spec match?(t, String.t()) :: boolean
-  def match?(%Regex{re_pattern: compiled}, string) when is_binary(string) do
-    :re.run(string, compiled, [{:capture, :none}]) == :match
+  def match?(%Regex{} = regex, string) when is_binary(string) do
+    safe_run(regex, string, [{:capture, :none}]) == :match
   end
 
   @doc """
@@ -292,7 +299,7 @@ defmodule Regex do
 
   ## Options
 
-    * `:return` - set to `:index` to return byte index and match length.
+    * `:return` - when set to `:index`, returns byte index and match length.
       Defaults to `:binary`.
     * `:capture` - what to capture in the result. Check the moduledoc for `Regex`
       to see the possible capture values.
@@ -312,11 +319,11 @@ defmodule Regex do
   @spec run(t, binary, [term]) :: nil | [binary] | [{integer, integer}]
   def run(regex, string, options \\ [])
 
-  def run(%Regex{re_pattern: compiled}, string, options) when is_binary(string) do
+  def run(%Regex{} = regex, string, options) when is_binary(string) do
     return = Keyword.get(options, :return, :binary)
     captures = Keyword.get(options, :capture, :all)
 
-    case :re.run(string, compiled, [{:capture, captures, return}]) do
+    case safe_run(regex, string, [{:capture, captures, return}]) do
       :nomatch -> nil
       :match -> []
       {:match, results} -> results
@@ -328,7 +335,7 @@ defmodule Regex do
 
   ## Options
 
-    * `:return` - set to `:index` to return byte index and match length.
+    * `:return` - when set to `:index`, returns byte index and match length.
       Defaults to `:binary`.
 
   ## Examples
@@ -397,7 +404,17 @@ defmodule Regex do
 
   """
   @spec names(t) :: [String.t()]
-  def names(%Regex{re_pattern: re_pattern}) do
+  def names(%Regex{re_pattern: compiled, re_version: version, source: source}) do
+    re_pattern =
+      case version() do
+        ^version ->
+          compiled
+
+        _ ->
+          {:ok, recompiled} = :re.compile(source)
+          recompiled
+      end
+
     {:namelist, names} = :re.inspect(re_pattern, :namelist)
     names
   end
@@ -411,7 +428,7 @@ defmodule Regex do
 
   ## Options
 
-    * `:return` - set to `:index` to return byte index and match length.
+    * `:return` - when set to `:index`, returns byte index and match length.
       Defaults to `:binary`.
     * `:capture` - what to capture in the result. Check the moduledoc for `Regex`
       to see the possible capture values.
@@ -437,15 +454,26 @@ defmodule Regex do
   @spec scan(t, String.t(), [term]) :: [[String.t()]]
   def scan(regex, string, options \\ [])
 
-  def scan(%Regex{re_pattern: compiled}, string, options) when is_binary(string) do
+  def scan(%Regex{} = regex, string, options) when is_binary(string) do
     return = Keyword.get(options, :return, :binary)
     captures = Keyword.get(options, :capture, :all)
     options = [{:capture, captures, return}, :global]
 
-    case :re.run(string, compiled, options) do
+    case safe_run(regex, string, options) do
       :match -> []
       :nomatch -> []
       {:match, results} -> results
+    end
+  end
+
+  defp safe_run(
+         %Regex{re_pattern: compiled, source: source, re_version: version, opts: compile_opts},
+         string,
+         options
+       ) do
+    case version() do
+      ^version -> :re.run(string, compiled, options)
+      _ -> :re.run(string, source, translate_options(compile_opts, options))
     end
   end
 
@@ -468,7 +496,8 @@ defmodule Regex do
       affect the splitting process.
 
     * `:include_captures` - when `true`, includes in the result the matches of
-      the regular expression. Defaults to `false`.
+      the regular expression. The matches are not counted towards the maximum
+      number of parts if combined with the `:parts` option. Defaults to `false`.
 
   ## Examples
 
@@ -508,11 +537,11 @@ defmodule Regex do
     end
   end
 
-  def split(%Regex{re_pattern: compiled}, string, opts)
+  def split(%Regex{} = regex, string, opts)
       when is_binary(string) and is_list(opts) do
     on = Keyword.get(opts, :on, :first)
 
-    case :re.run(string, compiled, [:global, capture: on]) do
+    case safe_run(regex, string, [:global, capture: on]) do
       {:match, matches} ->
         index = parts_to_index(Keyword.get(opts, :parts, :infinity))
         trim = Keyword.get(opts, :trim, false)
@@ -634,11 +663,11 @@ defmodule Regex do
     do_replace(regex, string, {replacement, arity}, options)
   end
 
-  defp do_replace(%Regex{re_pattern: compiled}, string, replacement, options) do
+  defp do_replace(%Regex{} = regex, string, replacement, options) do
     opts = if Keyword.get(options, :global) != false, do: [:global], else: []
     opts = [{:capture, :all, :index} | opts]
 
-    case :re.run(string, compiled, opts) do
+    case safe_run(regex, string, opts) do
       :nomatch ->
         string
 

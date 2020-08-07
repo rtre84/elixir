@@ -42,9 +42,9 @@ defmodule Supervisor.Spec do
       end
 
   Notice in this case we don't have to explicitly import
-  `Supervisor.Spec` as `use Supervisor` automatically does so.
+  `Supervisor.Spec` since `use Supervisor` automatically does so.
   Defining a module-based supervisor can be useful, for example,
-  to perform initialization tasks in the `c:init/1` callback.
+  to perform initialization tasks in the `c:Supervisor.init/1` callback.
 
   ## Supervisor and worker options
 
@@ -83,8 +83,8 @@ defmodule Supervisor.Spec do
       `:normal`, `:shutdown` or `{:shutdown, term}`
 
   Notice that supervisor that reached maximum restart intensity will exit with `:shutdown` reason.
-  In this case the supervisor will only be restarted if its child specification was defined with
-  the `:restart` option is set to `:permanent` (the default).
+  In this case the supervisor will only restart if its child specification was defined with
+  the `:restart` option set to `:permanent` (the default).
 
   ### Shutdown values (`:shutdown`)
 
@@ -108,9 +108,6 @@ defmodule Supervisor.Spec do
 
   @moduledoc deprecated:
                "Use the new child specifications outlined in the Supervisor module instead"
-
-  # TODO: Deprecate all functions in this module on Elixir v1.9.
-  # Also deprecate entry in Supervisor.Default.
 
   @typedoc "Supported strategies"
   @type strategy :: :simple_one_for_one | :one_for_one | :one_for_all | :rest_for_one
@@ -139,7 +136,7 @@ defmodule Supervisor.Spec do
   supervise and a set of `options`.
 
   Returns a tuple containing the supervisor specification. This tuple can be
-  used as the return value of the `c:init/1` callback when implementing a
+  used as the return value of the `c:Supervisor.init/1` callback when implementing a
   module-based supervisor.
 
   ## Examples
@@ -169,6 +166,7 @@ defmodule Supervisor.Spec do
           max_restarts: non_neg_integer,
           max_seconds: pos_integer
         ) :: {:ok, tuple}
+  @deprecated "Use the new child specifications outlined in the Supervisor module instead"
   def supervise(children, options) do
     unless strategy = options[:strategy] do
       raise ArgumentError, "expected :strategy option to be given"
@@ -236,6 +234,7 @@ defmodule Supervisor.Spec do
           function: atom,
           modules: modules
         ) :: spec
+  @deprecated "Use the new child specifications outlined in the Supervisor module instead"
   def worker(module, args, options \\ []) do
     child(:worker, module, args, options)
   end
@@ -269,6 +268,7 @@ defmodule Supervisor.Spec do
           function: atom,
           modules: modules
         ) :: spec
+  @deprecated "Use the new child specifications outlined in the Supervisor module instead"
   def supervisor(module, args, options \\ []) do
     options = Keyword.put_new(options, :shutdown, :infinity)
     child(:supervisor, module, args, options)

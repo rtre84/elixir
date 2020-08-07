@@ -4,16 +4,19 @@ defmodule Inspect.Opts do
 
   The following fields are available:
 
-    * `:structs` - when `false`, structs are not formatted by the inspect
-      protocol, they are instead printed as maps, defaults to `true`.
+    * `:base` - prints integers as `:binary`, `:octal`, `:decimal`, or `:hex`,
+      defaults to `:decimal`. When inspecting binaries any `:base` other than
+      `:decimal` implies `binaries: :as_binaries`.
 
-    * `:binaries` - when `:as_strings` all binaries will be printed as strings,
-      non-printable bytes will be escaped.
+    * `:binaries` - when `:as_binaries` all binaries will be printed in bit
+      syntax.
 
-      When `:as_binaries` all binaries will be printed in bit syntax.
+      When `:as_strings` all binaries will be printed as strings, non-printable
+      bytes will be escaped.
 
       When the default `:infer`, the binary will be printed as a string if it
-      is printable, otherwise in bit syntax.
+      is printable, otherwise in bit syntax. See `String.printable?/1` to learn
+      when a string is printable.
 
     * `:charlists` - when `:as_charlists` all lists will be printed as charlists,
       non-printable elements will be escaped.
@@ -21,74 +24,86 @@ defmodule Inspect.Opts do
       When `:as_lists` all lists will be printed as lists.
 
       When the default `:infer`, the list will be printed as a charlist if it
-      is printable, otherwise as list.
+      is printable, otherwise as list. See `List.ascii_printable?/1` to learn
+      when a charlist is printable.
 
-    * `:limit` - limits the number of items that are printed for tuples,
-      bitstrings, maps, lists and any other collection of items. It does not
-      apply to strings nor charlists and defaults to 50. If you don't want to limit
-      the number of items to a particular number, use `:infinity`.
+    * `:custom_options` (since v1.9.0) - a keyword list storing custom user-defined
+      options. Useful when implementing the `Inspect` protocol for nested structs
+      to pass the custom options through.
 
-    * `:printable_limit` - limits the number of bytes that are printed for strings
-      and charlists. Defaults to 4096. If you don't want to limit the number of items
-      to a particular number, use `:infinity`.
+    * `:inspect_fun` (since v1.9.0) - a function to build algebra documents.
+      Defaults to `Inspect.inspect/2`.
 
-    * `:pretty` - if set to `true` enables pretty printing, defaults to `false`.
+    * `:limit` - limits the number of items that are inspected for tuples,
+      bitstrings, maps, lists and any other collection of items, with the exception of
+      printable strings and printable charlists which use the `:printable_limit` option.
+      If you don't want to limit the number of items to a particular number,
+      use `:infinity`. It accepts a positive integer or `:infinity`.
+      Defaults to `50`.
 
-    * `:width` - defaults to 80 characters, used when pretty is `true` or when
-      printing to IO devices. Set to 0 to force each item to be printed on its
-      own line. If you don't want to limit the number of items to a particular
-      number, use `:infinity`.
+    * `:pretty` - if set to `true` enables pretty printing. Defaults to `false`.
 
-    * `:base` - prints integers as `:binary`, `:octal`, `:decimal`, or `:hex`,
-      defaults to `:decimal`. When inspecting binaries any `:base` other than
-      `:decimal` implies `binaries: :as_binaries`.
+    * `:printable_limit` - limits the number of characters that are inspected
+      on printable strings and printable charlists. You can use `String.printable?/1`
+      and `List.ascii_printable?/1` to check if a given string or charlist is
+      printable. If you don't want to limit the number of characters to a particular
+      number, use `:infinity`. It accepts a positive integer or `:infinity`.
+      Defaults to `4096`.
 
     * `:safe` - when `false`, failures while inspecting structs will be raised
       as errors instead of being wrapped in the `Inspect.Error` exception. This
       is useful when debugging failures and crashes for custom inspect
       implementations.
 
+    * `:structs` - when `false`, structs are not formatted by the inspect
+      protocol, they are instead printed as maps. Defaults to `true`.
+
     * `:syntax_colors` - when set to a keyword list of colors the output is
       colorized. The keys are types and the values are the colors to use for
       each type (for example, `[number: :red, atom: :blue]`). Types can include
-      `:number`, `:atom`, `regex`, `:tuple`, `:map`, `:list`, and `:reset`.
+      `:atom`, `:binary`, `:boolean`, `:list`, `:map`, `:number`, `:regex`,
+      `:string`, and `:tuple`. Custom data types may provide their own options.
       Colors can be any `t:IO.ANSI.ansidata/0` as accepted by `IO.ANSI.format/1`.
 
-    * `:inspect_fun` (since v1.9.0) - a function to build algebra documents,
-      defaults to `Inspect.inspect/2`
+    * `:width` - number of characters per line used when pretty is `true` or when
+      printing to IO devices. Set to `0` to force each item to be printed on its
+      own line. If you don't want to limit the number of items to a particular
+      number, use `:infinity`. Defaults to `80`.
 
   """
 
   # TODO: Remove :char_lists key on v2.0
-  defstruct structs: true,
+  defstruct base: :decimal,
             binaries: :infer,
-            charlists: :infer,
             char_lists: :infer,
+            charlists: :infer,
+            custom_options: [],
+            inspect_fun: &Inspect.inspect/2,
             limit: 50,
-            printable_limit: 4096,
-            width: 80,
-            base: :decimal,
             pretty: false,
+            printable_limit: 4096,
             safe: true,
+            structs: true,
             syntax_colors: [],
-            inspect_fun: &Inspect.inspect/2
+            width: 80
 
   @type color_key :: atom
 
   # TODO: Remove :char_lists key and :as_char_lists value on v2.0
   @type t :: %__MODULE__{
-          structs: boolean,
-          binaries: :infer | :as_binaries | :as_strings,
-          charlists: :infer | :as_lists | :as_charlists,
-          char_lists: :infer | :as_lists | :as_char_lists,
-          limit: pos_integer | :infinity,
-          printable_limit: pos_integer | :infinity,
-          width: pos_integer | :infinity,
           base: :decimal | :binary | :hex | :octal,
+          binaries: :infer | :as_binaries | :as_strings,
+          char_lists: :infer | :as_lists | :as_char_lists,
+          charlists: :infer | :as_lists | :as_charlists,
+          custom_options: keyword,
+          inspect_fun: (any, t -> Inspect.Algebra.t()),
+          limit: non_neg_integer | :infinity,
           pretty: boolean,
+          printable_limit: non_neg_integer | :infinity,
           safe: boolean,
+          structs: boolean,
           syntax_colors: [{color_key, IO.ANSI.ansidata()}],
-          inspect_fun: (any, t -> Inspect.Algebra.t())
+          width: non_neg_integer | :infinity
         }
 end
 
@@ -180,17 +195,17 @@ defmodule Inspect.Algebra do
 
   @type t ::
           binary
-          | :doc_nil
           | :doc_line
-          | doc_string
-          | doc_cons
-          | doc_nest
+          | :doc_nil
           | doc_break
-          | doc_group
-          | doc_color
-          | doc_force
-          | doc_fits
           | doc_collapse
+          | doc_color
+          | doc_cons
+          | doc_fits
+          | doc_force
+          | doc_group
+          | doc_nest
+          | doc_string
 
   @typep doc_string :: {:doc_string, t, non_neg_integer}
   defmacrop doc_string(string, length) do
@@ -238,20 +253,23 @@ defmodule Inspect.Algebra do
   end
 
   @docs [
-    :doc_string,
-    :doc_cons,
-    :doc_nest,
     :doc_break,
-    :doc_group,
+    :doc_collapse,
     :doc_color,
-    :doc_force,
+    :doc_cons,
     :doc_fits,
-    :doc_collapse
+    :doc_force,
+    :doc_group,
+    :doc_nest,
+    :doc_string
   ]
 
   defguard is_doc(doc)
            when is_binary(doc) or doc in [:doc_nil, :doc_line] or
                   (is_tuple(doc) and elem(doc, 0) in @docs)
+
+  defguardp is_limit(limit) when limit == :infinity or (is_integer(limit) and limit >= 0)
+  defguardp is_width(limit) when limit == :infinity or (is_integer(limit) and limit >= 0)
 
   # Elixir + Inspect.Opts conveniences
 
@@ -384,13 +402,14 @@ defmodule Inspect.Algebra do
     {:lists.reverse(["..." | acc]), simple?}
   end
 
-  defp container_each([term | terms], limit, opts, fun, acc, simple?) when is_list(terms) do
+  defp container_each([term | terms], limit, opts, fun, acc, simple?)
+       when is_list(terms) and is_limit(limit) do
     limit = decrement(limit)
     doc = fun.(term, %{opts | limit: limit})
     container_each(terms, limit, opts, fun, [doc | acc], simple? and simple?(doc))
   end
 
-  defp container_each([left | right], limit, opts, fun, acc, simple?) do
+  defp container_each([left | right], limit, opts, fun, acc, simple?) when is_limit(limit) do
     limit = decrement(limit)
     left = fun.(left, %{opts | limit: limit})
     right = fun.(right, %{opts | limit: limit})
@@ -871,7 +890,7 @@ defmodule Inspect.Algebra do
 
   """
   @spec format(t, non_neg_integer | :infinity) :: iodata
-  def format(doc, width) when is_doc(doc) and (width == :infinity or width >= 0) do
+  def format(doc, width) when is_doc(doc) and is_width(width) do
     format(width, 0, [{0, :flat, doc}])
   end
 
@@ -887,7 +906,12 @@ defmodule Inspect.Algebra do
   #
   @typep mode :: :flat | :flat_no_break | :break | :break_no_flat
 
-  @spec fits?(width :: integer(), column :: integer(), break? :: boolean(), entries) :: boolean()
+  @spec fits?(
+          width :: non_neg_integer(),
+          column :: non_neg_integer(),
+          break? :: boolean(),
+          entries
+        ) :: boolean()
         when entries:
                maybe_improper_list({integer(), mode(), t()}, {:tail, boolean(), entries} | [])
 
@@ -948,7 +972,9 @@ defmodule Inspect.Algebra do
   defp fits?(w, k, b?, [{i, m, doc_group(x, _)} | t]),
     do: fits?(w, k, b?, [{i, m, x} | {:tail, b?, t}])
 
-  @spec format(integer | :infinity, integer, [{integer, mode, t}]) :: [binary]
+  @spec format(width :: non_neg_integer() | :infinity, column :: non_neg_integer(), [
+          {integer, mode, t}
+        ]) :: [binary]
   defp format(_, _, []), do: []
   defp format(w, k, [{_, _, :doc_nil} | t]), do: format(w, k, t)
   defp format(w, _, [{i, _, :doc_line} | t]), do: [indent(i) | format(w, i, t)]

@@ -10,14 +10,21 @@
 
 -include("elixir.hrl").
 -define(cache, {elixir, cache_env}).
+-define(locals, {elixir, locals}).
 -define(tracker, 'Elixir.Module.LocalsTracker').
 
 setup({DataSet, _DataBag}) ->
   ets:insert(DataSet, {?cache, 0, nil}),
+
+  case elixir_config:get(bootstrap) of
+    false -> ets:insert(DataSet, {?locals, true});
+    true -> ok
+  end,
+
   ok.
 
-stop({_DataSet, _DataBag}) ->
-  ok.
+stop({DataSet, _DataBag}) ->
+  ets:delete(DataSet, ?locals).
 
 yank(Tuple, Module) ->
   if_tracker(Module, fun(Tracker) -> ?tracker:yank(Tracker, Tuple) end).
@@ -25,8 +32,8 @@ yank(Tuple, Module) ->
 reattach(Tuple, Kind, Module, Function, Neighbours, Meta) ->
   if_tracker(Module, fun(Tracker) -> ?tracker:reattach(Tracker, Tuple, Kind, Function, Neighbours, Meta) end).
 
-record_local(Tuple, _Module, Function, _Meta, _IsMacroDispatch)
-  when Function == nil; Function == Tuple -> ok;
+record_local(_Tuple, _Module, nil, _Meta, _IsMacroDispatch) ->
+  ok;
 record_local(Tuple, Module, Function, Meta, IsMacroDispatch) ->
   if_tracker(Module, fun(Tracker) -> ?tracker:add_local(Tracker, Function, Tuple, Meta, IsMacroDispatch), ok end).
 
@@ -44,9 +51,12 @@ if_tracker(Module, Callback) ->
   if_tracker(Module, ok, Callback).
 
 if_tracker(Module, Default, Callback) ->
-  try {elixir_config:get(bootstrap), elixir_module:data_tables(Module)} of
-    {true, _Tracker} -> Default;
-    {false, Tracker} -> Callback(Tracker)
+  try
+    {DataSet, _} = Tables = elixir_module:data_tables(Module),
+    {ets:member(DataSet, ?locals), Tables}
+  of
+    {true, Tracker} -> Callback(Tracker);
+    {false, _} -> Default
   catch
     error:badarg -> Default
   end.
@@ -95,9 +105,15 @@ warn_unused_local(File, Module, All, Private) ->
 
 ensure_no_undefined_local(File, Module, All) ->
   if_tracker(Module, [], fun(Tracker) ->
-    [elixir_errors:form_error(Meta, File, ?MODULE, {Error, Tuple})
-     || {Meta, Tuple, Error} <- ?tracker:collect_undefined_locals(Tracker, All)],
-    ok
+    case ?tracker:collect_undefined_locals(Tracker, All) of
+      [] -> ok;
+
+      List ->
+        [{FirstMeta, FirstTuple, FirstError} | Rest] = lists:sort(List),
+        [elixir_errors:form_warn(Meta, File, ?MODULE, {Error, Tuple}) || {Meta, Tuple, Error} <- lists:reverse(Rest)],
+        elixir_errors:form_error(FirstMeta, File, ?MODULE, {FirstError, FirstTuple}),
+        ok
+    end
   end).
 
 format_error({function_conflict, {Receiver, {Name, Arity}}}) ->
@@ -105,13 +121,13 @@ format_error({function_conflict, {Receiver, {Name, Arity}}}) ->
     [elixir_aliases:inspect(Receiver), Name, Arity]);
 
 format_error({unused_args, {Name, Arity}}) ->
-  io_lib:format("default arguments in ~ts/~B are never used", [Name, Arity]);
+  io_lib:format("default values for the optional arguments in ~ts/~B are never used", [Name, Arity]);
 
 format_error({unused_args, {Name, Arity}, 1}) ->
-  io_lib:format("the first default argument in ~ts/~B is never used", [Name, Arity]);
+  io_lib:format("the default value for the first optional argument in ~ts/~B is never used", [Name, Arity]);
 
 format_error({unused_args, {Name, Arity}, Count}) ->
-  io_lib:format("the first ~B default arguments in ~ts/~B are never used", [Count, Name, Arity]);
+  io_lib:format("the default values for the first ~B optional arguments in ~ts/~B are never used", [Count, Name, Arity]);
 
 format_error({unused_def, {Name, Arity}, defp}) ->
   io_lib:format("function ~ts/~B is unused", [Name, Arity]);

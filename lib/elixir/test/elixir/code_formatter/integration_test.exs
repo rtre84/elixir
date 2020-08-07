@@ -420,7 +420,11 @@ defmodule Code.Formatter.IntegrationTest do
                        [
                          {"p", [], ["1"]},
                          {"p", [], ["2"]},
-                         {"div", [], [{"p", [], ["3"]}, {"p", [], ["4"]}]},
+                         {"div", [],
+                          [
+                            {"p", [], ["3"]},
+                            {"p", [], ["4"]}
+                          ]},
                          {"p", [], ["5"]}
                        ]}
                     ]}
@@ -461,6 +465,27 @@ defmodule Code.Formatter.IntegrationTest do
     """
   end
 
+  test "false positive sigil" do
+    assert_same """
+    def sigil_d(<<year::2-bytes, "-", month::2-bytes, "-", day::2-bytes>>, calendar) do
+      ymd(year, month, day, calendar)
+    end
+    """
+  end
+
+  test "newline after stab" do
+    assert_same """
+    capture_io(":erl. mof*,,l", fn ->
+      assert :io.scan_erl_form('>') == {:ok, [{:":", 1}, {:atom, 1, :erl}, {:dot, 1}], 1}
+
+      expected_tokens = [{:atom, 1, :mof}, {:*, 1}, {:",", 1}, {:",", 1}, {:atom, 1, :l}]
+      assert :io.scan_erl_form('>') == {:ok, expected_tokens, 1}
+
+      assert :io.scan_erl_form('>') == {:eof, 1}
+    end)
+    """
+  end
+
   test "capture with operators" do
     assert_same """
     "this works" |> (&String.upcase/1) |> (&String.downcase/1)
@@ -488,6 +513,14 @@ defmodule Code.Formatter.IntegrationTest do
 
     assert_format bad, """
     "this works" ++ (&String.upcase/1) ++ &String.downcase/1
+    """
+
+    bad = """
+    "this works" +++ (&String.upcase/1) +++ (&String.downcase/1)
+    """
+
+    assert_format bad, """
+    "this works" +++ (&String.upcase/1) +++ &String.downcase/1
     """
 
     bad = """

@@ -69,6 +69,61 @@ defmodule ExUnit.FormatterTest do
            """
   end
 
+  test "formats test exits with function clause mfa" do
+    {error, stack} =
+      try do
+        Access.fetch(:foo, :bar)
+      catch
+        :error, error -> {error, __STACKTRACE__}
+      end
+
+    failure = [{:exit, {{error, stack}, {:mod, :fun, []}}, []}]
+
+    assert trim_multiline_whitespace(format_test_failure(test(), failure, 1, 80, &formatter/2)) =~
+             """
+               1) world (Hello)
+                  test/ex_unit/formatter_test.exs:1
+                  ** (exit) exited in: :mod.fun()
+                     ** (EXIT) an exception was raised:
+                       ** (FunctionClauseError) no function clause matching in Access.fetch/2
+
+                       The following arguments were given to Access.fetch/2:
+
+                           # 1
+                           :foo
+
+                           # 2
+                           :bar
+
+                       Attempted function clauses (showing 5 out of 5):
+
+                           def fetch(%module{} = container, key)
+             """
+  end
+
+  test "formats test exits with assertion mfa" do
+    {error, stack} =
+      try do
+        assert 1 == 2
+      rescue
+        error -> {error, __STACKTRACE__}
+      end
+
+    failure = [{:exit, {{error, stack}, {:mod, :fun, []}}, []}]
+
+    assert trim_multiline_whitespace(format_test_failure(test(), failure, 1, 80, &formatter/2)) =~
+             """
+               1) world (Hello)
+                  test/ex_unit/formatter_test.exs:1
+                  ** (exit) exited in: :mod.fun()
+                     ** (EXIT) an exception was raised:
+                       Assertion with == failed
+                       code:  assert 1 == 2
+                       left:  1
+                       right: 2
+             """
+  end
+
   test "formats test throws" do
     failure = [{:throw, 1, []}]
 
@@ -87,6 +142,61 @@ defmodule ExUnit.FormatterTest do
                 test/ex_unit/formatter_test.exs:1
                 ** (EXIT from #{inspect(self())}) 1
            """
+  end
+
+  test "formats test EXITs with function clause errors" do
+    {error, stack} =
+      try do
+        Access.fetch(:foo, :bar)
+      catch
+        :error, error -> {error, __STACKTRACE__}
+      end
+
+    failure = [{{:EXIT, self()}, {error, stack}, []}]
+
+    assert trim_multiline_whitespace(format_test_failure(test(), failure, 1, 80, &formatter/2)) =~
+             """
+               1) world (Hello)
+                  test/ex_unit/formatter_test.exs:1
+                  ** (EXIT from #{inspect(self())}) an exception was raised:
+
+                       ** (FunctionClauseError) no function clause matching in Access.fetch/2
+
+                       The following arguments were given to Access.fetch/2:
+
+                           # 1
+                           :foo
+
+                           # 2
+                           :bar
+
+                       Attempted function clauses (showing 5 out of 5):
+
+                           def fetch(%module{} = container, key)
+             """
+  end
+
+  test "formats test EXITs with assertion errors" do
+    {error, stack} =
+      try do
+        assert 1 == 2
+      rescue
+        error -> {error, __STACKTRACE__}
+      end
+
+    failure = [{{:EXIT, self()}, {error, stack}, []}]
+
+    assert trim_multiline_whitespace(format_test_failure(test(), failure, 1, 80, &formatter/2)) =~
+             """
+               1) world (Hello)
+                  test/ex_unit/formatter_test.exs:1
+                  ** (EXIT from #{inspect(self())}) an exception was raised:
+
+                       Assertion with == failed
+                       code:  assert 1 == 2
+                       left:  1
+                       right: 2
+             """
   end
 
   test "formats test errors with test_location_relative_path" do
@@ -192,7 +302,7 @@ defmodule ExUnit.FormatterTest do
                     def fetch(%module{} = container, key)
            """
 
-    assert failure =~ ~r"\(elixir\) lib/access\.ex:\d+: Access\.fetch/2"
+    assert failure =~ ~r"\(elixir #{System.version()}\) lib/access\.ex:\d+: Access\.fetch/2"
   end
 
   test "formats setup_all errors" do
@@ -201,6 +311,18 @@ defmodule ExUnit.FormatterTest do
     assert format_test_all_failure(test_module(), failure, 1, 80, &formatter/2) =~ """
              1) Hello: failure on setup_all callback, all tests have been invalidated
                 ** (RuntimeError) oops
+           """
+  end
+
+  test "formats matches correctly" do
+    failure = [{:error, catch_assertion(assert %{a: :b} = %{a: :c}), []}]
+
+    assert format_test_all_failure(test_module(), failure, 1, :infinity, &formatter/2) =~ """
+             1) Hello: failure on setup_all callback, all tests have been invalidated
+                match (=) failed
+                code:  assert %{a: :b} = %{a: :c}
+                left:  %{a: :b}
+                right: %{a: :c}
            """
   end
 
@@ -223,9 +345,7 @@ defmodule ExUnit.FormatterTest do
              1) Hello: failure on setup_all callback, all tests have been invalidated
                 Assertion with == failed
                 code:  assert [1, 2, 3] == [4, 5, 6]
-                left:  [1,
-                        2,
-                        3]
+                left:  [1, 2, 3]
                 right: [4,
                         5,
                         6]

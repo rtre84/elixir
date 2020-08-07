@@ -85,7 +85,7 @@ defmodule FileTest do
 
       try do
         File.mkdir_p(Path.join(dest, "a"))
-        assert File.rename(src, dest) == {:error, :eisdir}
+        assert File.rename(src, dest) in [{:error, :eisdir}, {:error, :eexist}]
         assert File.exists?(src)
         refute File.exists?(Path.join(dest, "file.txt"))
       after
@@ -245,7 +245,7 @@ defmodule FileTest do
 
       try do
         assert File.exists?(src)
-        assert File.rename(src, dest) == {:error, :einval}
+        assert File.rename(src, dest) in [{:error, :einval}, {:error, :eexist}]
         assert File.exists?(src)
       after
         File.rm_rf(src)
@@ -1887,7 +1887,7 @@ defmodule FileTest do
 
   test "invalid_cd!" do
     message =
-      ~r"\Acould not set current working directory to #{inspect(fixture_path("file.txt"))}: (not a directory|no such file or directory)"
+      ~r"\Acould not set current working directory to #{inspect(fixture_path("file.txt"))}: (not a directory|no such file or directory|I/O error)"
 
     assert_raise File.Error, message, fn ->
       File.cd!(fixture_path("file.txt"))
@@ -1915,7 +1915,7 @@ defmodule FileTest do
     end
   end
 
-  test "touch with erlang timestamp" do
+  test "touch with Erlang timestamp" do
     fixture = tmp_path("tmp_erlang_touch.txt")
 
     try do

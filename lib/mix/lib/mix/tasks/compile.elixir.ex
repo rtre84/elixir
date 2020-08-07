@@ -15,8 +15,38 @@ defmodule Mix.Tasks.Compile.Elixir do
   Note it is important to recompile a file's dependencies as
   there are often compile time dependencies between them.
 
+  ## `__mix_recompile__?/0`
+
+  A module may export a `__mix_recompile__?/0` function that can
+  cause the module to be recompiled using custom rules. For example,
+  `@external_resource` already adds a compile-time dependency on an
+  external file, however to depend on a _dynamic_ list of files we
+  can do:
+
+      defmodule MyModule do
+        paths = Path.wildcard("*.txt")
+        paths_hash = :erlang.md5(paths)
+
+        for path <- paths do
+          @external_resource path
+        end
+
+        def __mix_recompile__?() do
+          Path.wildcard("*.txt") |> :erlang.md5() != unquote(paths_hash)
+        end
+      end
+
+  Compiler calls `__mix_recompile__?/0` for every module being
+  compiled (or previously compiled) and thus it is very important
+  to do there as little work as possible to not slow down the
+  compilation.
+
+  If module has `@compile {:autoload, false}`, `__mix_recompile__?/0` will
+  not be used.
+
   ## Command line options
 
+    * `--verbose` - prints each file being compiled
     * `--force` - forces compilation regardless of modification times
     * `--docs` (`--no-docs`) - attaches (or not) documentation to compiled modules
     * `--debug-info` (`--no-debug-info`) - attaches (or not) debug info to compiled modules
@@ -25,7 +55,9 @@ defmodule Mix.Tasks.Compile.Elixir do
       return a non-zero exit code
     * `--long-compilation-threshold N` - sets the "long compilation" threshold
       (in seconds) to `N` (see the docs for `Kernel.ParallelCompiler.compile/2`)
+    * `--profile` - if set to `time`, outputs timing information of compilation steps
     * `--all-warnings` - prints warnings even from files that do not need to be recompiled
+    * `--tracer` - adds a compiler tracer in addition to any specified in the `mix.exs` file
 
   ## Configuration
 
@@ -33,10 +65,13 @@ defmodule Mix.Tasks.Compile.Elixir do
       Defaults to `["lib"]`.
 
     * `:elixirc_options` - compilation options that apply to Elixir's compiler.
-      They are the same as the command line options listed above. They must be specified
-      as atoms and use underscores instead of dashes (for example, `:debug_info`). These
-      options can always be overridden from the command line and they have the same defaults
-      as their command line counterparts, as documented above.
+      See `Code.put_compiler_option/2` for a complete list of options. These
+      options are often overridable from the command line using the switches
+      above.
+
+    * `[xref: [exclude: ...]]` - a list of `module` or `{module, function, arity}`
+      that should not be warned on in case on undefined modules or undefined
+      application warnings.
 
   """
 
@@ -48,7 +83,9 @@ defmodule Mix.Tasks.Compile.Elixir do
     debug_info: :boolean,
     verbose: :boolean,
     long_compilation_threshold: :integer,
-    all_warnings: :boolean
+    profile: :string,
+    all_warnings: :boolean,
+    tracer: :keep
   ]
 
   @impl true
@@ -67,18 +104,52 @@ defmodule Mix.Tasks.Compile.Elixir do
     configs = [Mix.Project.config_mtime() | Mix.Tasks.Compile.Erlang.manifests()]
     force = opts[:force] || Mix.Utils.stale?(configs, [manifest])
 
-    opts = Keyword.merge(project[:elixirc_options] || [], opts)
+    opts =
+      (project[:elixirc_options] || [])
+      |> Keyword.merge(opts)
+      |> xref_exclude_opts(project)
+      |> tracers_opts()
+      |> profile_opts()
+
     Mix.Compilers.Elixir.compile(manifest, srcs, dest, [:ex], force, opts)
   end
 
   @impl true
   def manifests, do: [manifest()]
-
   defp manifest, do: Path.join(Mix.Project.manifest_path(), @manifest)
 
   @impl true
   def clean do
     dest = Mix.Project.compile_path()
     Mix.Compilers.Elixir.clean(manifest(), dest)
+  end
+
+  defp xref_exclude_opts(opts, project) do
+    exclude = List.wrap(project[:xref][:exclude])
+
+    if exclude == [] do
+      opts
+    else
+      Keyword.update(opts, :no_warn_undefined, exclude, &(List.wrap(&1) ++ exclude))
+    end
+  end
+
+  defp tracers_opts(opts) do
+    case Keyword.pop_values(opts, :tracer) do
+      {[], opts} ->
+        opts
+
+      {tracers, opts} ->
+        tracers = Enum.map(tracers, &Module.concat([&1]))
+        Keyword.update(opts, :tracers, tracers, &(tracers ++ &1))
+    end
+  end
+
+  defp profile_opts(opts) do
+    case Keyword.fetch(opts, :profile) do
+      {:ok, "time"} -> Keyword.put(opts, :profile, :time)
+      {:ok, _} -> Keyword.delete(opts, :profile)
+      :error -> opts
+    end
   end
 end

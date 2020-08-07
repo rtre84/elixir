@@ -20,7 +20,7 @@ defmodule Path do
 
   ## Examples
 
-  ### Unix
+  ### Unix-like operating systems
 
       Path.absname("foo")
       #=> "/usr/local/foo"
@@ -95,6 +95,8 @@ defmodule Path do
     absname(absname_join(name), cwd)
   end
 
+  @slash [?/, ?\\]
+
   # Joins a list
   defp absname_join([name1, name2 | rest]), do: absname_join([absname_join(name1, name2) | rest])
 
@@ -108,6 +110,11 @@ defmodule Path do
   defp do_absname_join(<<uc_letter, ?:, rest::binary>>, relativename, [], :win32)
        when uc_letter in ?A..?Z do
     do_absname_join(rest, relativename, [?:, uc_letter + ?a - ?A], :win32)
+  end
+
+  defp do_absname_join(<<c1, c2, rest::binary>>, relativename, [], :win32)
+       when c1 in @slash and c2 in @slash do
+    do_absname_join(rest, relativename, '//', :win32)
   end
 
   defp do_absname_join(<<?\\, rest::binary>>, relativename, result, :win32),
@@ -145,8 +152,8 @@ defmodule Path do
 
   ## Examples
 
-      Path.expand("/foo/bar/../bar")
-      #=> "/foo/bar"
+      Path.expand("/foo/bar/../baz")
+      #=> "/foo/baz"
 
   """
   @spec expand(t) :: binary
@@ -188,7 +195,7 @@ defmodule Path do
 
   ## Examples
 
-  ### Unix
+  ### Unix-like operating systems
 
       Path.type("/")                #=> :absolute
       Path.type("/usr/local/bin")   #=> :absolute
@@ -216,7 +223,7 @@ defmodule Path do
 
   ## Examples
 
-  ### Unix
+  ### Unix-like operating systems
 
       Path.relative("/usr/local/bin")   #=> "usr/local/bin"
       Path.relative("usr/local/bin")    #=> "usr/local/bin"
@@ -253,8 +260,6 @@ defmodule Path do
   defp unix_pathtype([?/ | relative]), do: {:absolute, relative}
   defp unix_pathtype([list | rest]) when is_list(list), do: unix_pathtype(list ++ rest)
   defp unix_pathtype(relative), do: {:relative, relative}
-
-  @slash [?/, ?\\]
 
   defp win32_pathtype([list | rest]) when is_list(list), do: win32_pathtype(list ++ rest)
 
@@ -517,6 +522,7 @@ defmodule Path do
     do_join(left, right, os_type) |> remove_dir_sep(os_type)
   end
 
+  defp do_join(left, "/", os_type), do: remove_dir_sep(left, os_type)
   defp do_join("", right, os_type), do: relative(right, os_type)
   defp do_join("/", right, os_type), do: "/" <> relative(right, os_type)
 
@@ -558,9 +564,6 @@ defmodule Path do
 
   """
   @spec split(t) :: [binary]
-
-  # Work around a bug in Erlang on UNIX
-  def split(""), do: []
 
   def split(path) do
     :filename.split(IO.chardata_to_string(path))
@@ -687,14 +690,9 @@ defmodule Path do
 
   defp resolve_home(rest) do
     case {rest, major_os_type()} do
-      {"\\" <> _, :win32} ->
-        System.user_home!() <> rest
-
-      {"/" <> _, _} ->
-        System.user_home!() <> rest
-
-      _ ->
-        rest
+      {"\\" <> _, :win32} -> System.user_home!() <> rest
+      {"/" <> _, _} -> System.user_home!() <> rest
+      _ -> "~" <> rest
     end
   end
 

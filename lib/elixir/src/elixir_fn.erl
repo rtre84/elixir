@@ -11,7 +11,8 @@ expand(Meta, Clauses, E) when is_list(Clauses) ->
       true ->
         form_error(Meta, E, ?MODULE, defaults_in_args);
       false ->
-        {EClause, EAcc} = elixir_clauses:clause(Meta, fn, fun elixir_clauses:head/2, Clause, Acc),
+        EReset = elixir_env:reset_unused_vars(Acc),
+        {EClause, EAcc} = elixir_clauses:clause(Meta, fn, fun elixir_clauses:head/2, Clause, EReset),
         {EClause, elixir_env:merge_and_check_unused_vars(Acc, EAcc)}
     end
   end,
@@ -34,22 +35,14 @@ fn_arity(Args) -> length(Args).
 
 %% Capture
 
-capture(Meta, {'/', _, [{{'.', _, [_, F]} = Dot, RequireMeta, []}, A]}, E) when is_atom(F), is_integer(A) ->
+capture(Meta, {'/', _, [{{'.', _, [M, F]} = Dot, DotMeta, []}, A]}, E) when is_atom(F), is_integer(A) ->
   Args = args_from_arity(Meta, A, E),
-  capture_require(Meta, {Dot, RequireMeta, Args}, E, true);
+  handle_capture_possible_warning(Meta, DotMeta, M, F, A, E),
+  capture_require(Meta, {Dot, Meta, Args}, E, true);
 
 capture(Meta, {'/', _, [{F, _, C}, A]}, E) when is_atom(F), is_integer(A), is_atom(C) ->
   Args = args_from_arity(Meta, A, E),
-  ImportMeta =
-    case lists:keyfind(import_fa, 1, Meta) of
-      {import_fa, {Receiver, Context}} ->
-        lists:keystore(context, 1,
-          lists:keystore(import, 1, Meta, {import, Receiver}),
-          {context, Context}
-        );
-      false -> Meta
-    end,
-  capture_import(Meta, {F, ImportMeta, Args}, E, true);
+  capture_import(Meta, {F, Meta, Args}, E, true);
 
 capture(Meta, {{'.', _, [_, Fun]}, _, Args} = Expr, E) when is_atom(Fun), is_list(Args) ->
   capture_require(Meta, Expr, E, is_sequential_and_not_empty(Args));
@@ -161,6 +154,18 @@ is_sequential([{'&', _, [Int]} | T], Int) -> is_sequential(T, Int + 1);
 is_sequential([], _Int) -> true;
 is_sequential(_, _Int) -> false.
 
+handle_capture_possible_warning(Meta, DotMeta, Mod, Fun, Arity, E) ->
+  case (Arity =:= 0) andalso (lists:keyfind(no_parens, 1, DotMeta) /= {no_parens, true}) of
+    true ->
+      elixir_errors:form_warn(Meta, E, ?MODULE, {parens_remote_capture, Mod, Fun});
+
+    false -> ok
+  end.
+
+format_error({parens_remote_capture, Mod, Fun}) ->
+  io_lib:format("extra parentheses on a remote function capture &~ts.~ts()/0 have been "
+                 "deprecated. Please remove the parentheses: &~ts.~ts/0",
+                 ['Elixir.Macro':to_string(Mod), Fun, 'Elixir.Macro':to_string(Mod), Fun]);
 format_error(clauses_with_different_arities) ->
   "cannot mix clauses with different arities in anonymous functions";
 format_error(defaults_in_args) ->

@@ -167,7 +167,7 @@ defmodule Mix.Tasks.New do
   end
 
   defp check_application_name!(name, inferred?) do
-    unless name =~ Regex.recompile!(~r/^[a-z][a-z0-9_]*$/) do
+    unless name =~ ~r/^[a-z][a-z0-9_]*$/ do
       Mix.raise(
         "Application name must start with a lowercase ASCII letter, followed by " <>
           "lowercase ASCII letters, numbers, or underscores, got: #{inspect(name)}" <>
@@ -182,7 +182,7 @@ defmodule Mix.Tasks.New do
   end
 
   defp check_mod_name_validity!(name) do
-    unless name =~ Regex.recompile!(~r/^[A-Z]\w*(\.[A-Z]\w*)*$/) do
+    unless name =~ ~r/^[A-Z]\w*(\.[A-Z]\w*)*$/ do
       Mix.raise(
         "Module name must be a valid Elixir alias (for example: Foo.Bar), got: #{inspect(name)}"
       )
@@ -292,6 +292,9 @@ defmodule Mix.Tasks.New do
   # Ignore package tarball (built via "mix hex.build").
   <%= @app %>-*.tar
   <% end %>
+
+  # Temporary files for e.g. tests
+  /tmp
   """)
 
   embed_template(:mix_exs, """
@@ -409,7 +412,7 @@ defmodule Mix.Tasks.New do
   embed_template(:lib, """
   defmodule <%= @mod %> do
     @moduledoc \"""
-    Documentation for <%= @mod %>.
+    Documentation for `<%= @mod %>`.
     \"""
 
     @doc \"""
@@ -435,6 +438,7 @@ defmodule Mix.Tasks.New do
 
     use Application
 
+    @impl true
     def start(_type, _args) do
       children = [
         # Starts a worker by calling: <%= @mod %>.Worker.start_link(arg)

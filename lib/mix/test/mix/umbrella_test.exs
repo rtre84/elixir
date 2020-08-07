@@ -3,8 +3,6 @@ Code.require_file("../test_helper.exs", __DIR__)
 defmodule Mix.UmbrellaTest do
   use MixTest.Case
 
-  @moduletag apps: [:foo, :bar]
-
   test "apps_paths" do
     in_fixture("umbrella_dep/deps/umbrella", fn ->
       assert Mix.Project.apps_paths() == nil
@@ -26,6 +24,28 @@ defmodule Mix.UmbrellaTest do
         File.mkdir_p!("apps/errors")
         File.write!("apps/errors/mix.exs", "raise :oops")
         assert Mix.Project.apps_paths() == %{bar: "apps/bar", foo: "apps/foo"}
+      end)
+    end)
+  end
+
+  test "umbrella app dir and the app name defined in mix.exs should be equal" do
+    in_fixture("umbrella_dep/deps/umbrella", fn ->
+      Mix.Project.in_project(:umbrella, ".", fn _ ->
+        File.write!("apps/bar/mix.exs", """
+        defmodule Bar.MixProject do
+          use Mix.Project
+
+          def project do
+            [app: :baz,
+             version: "0.1.0",
+             deps: []]
+          end
+        end
+        """)
+
+        assert_raise Mix.Error, ~r/^Umbrella app :baz is located at directory bar/, fn ->
+          Mix.Task.run("deps")
+        end
       end)
     end)
   end
@@ -70,6 +90,23 @@ defmodule Mix.UmbrellaTest do
 
         assert Mix.Tasks.App.Start.run([])
         assert Protocol.consolidated?(Enumerable)
+      end)
+    end)
+  end
+
+  test "recompiles umbrella on config change" do
+    in_fixture("umbrella_dep/deps/umbrella", fn ->
+      Mix.Project.in_project(:umbrella, ".", fn _ ->
+        Mix.Task.run("compile", [])
+        bar = File.stat!("_build/dev/lib/bar/.mix/compile.elixir").mtime
+        foo = File.stat!("_build/dev/lib/foo/.mix/compile.elixir").mtime
+
+        ensure_touched("mix.exs", max(foo, bar))
+
+        Mix.Task.clear()
+        Mix.Task.run("compile", [])
+        assert File.stat!("_build/dev/lib/bar/.mix/compile.elixir").mtime > bar
+        assert File.stat!("_build/dev/lib/foo/.mix/compile.elixir").mtime > foo
       end)
     end)
   end
@@ -242,6 +279,9 @@ defmodule Mix.UmbrellaTest do
     end)
   end
 
+  # Bar.bar is loaded dynamically
+  @compile {:no_warn_undefined, {Bar, :bar, 0}}
+
   test "compile for umbrella as dependency" do
     in_fixture("umbrella_dep", fn ->
       Mix.Project.in_project(:umbrella_dep, ".", fn _ ->
@@ -280,7 +320,7 @@ defmodule Mix.UmbrellaTest do
 
           def project do
             # Ensure we have the proper environment
-            :dev = Mix.env
+            :dev = Mix.env()
 
             [app: :foo,
              version: "0.1.0",
@@ -295,7 +335,7 @@ defmodule Mix.UmbrellaTest do
 
           def project do
             # Ensure we have the proper environment
-            :dev = Mix.env
+            :dev = Mix.env()
 
             [app: :bar,
              version: "0.1.0",
@@ -320,7 +360,7 @@ defmodule Mix.UmbrellaTest do
           def project do
             [app: :bar,
              version: "0.1.0",
-             aliases: ["compile.all": fn _ -> Mix.shell.info "no compile bar" end]]
+             aliases: ["compile.all": fn _ -> Mix.shell().info "no compile bar" end]]
           end
         end
         """)
@@ -348,57 +388,61 @@ defmodule Mix.UmbrellaTest do
     end)
   end
 
-  test "recompiles after runtime path dependency changes" do
-    in_fixture("umbrella_dep/deps/umbrella/apps", fn ->
-      Mix.Project.in_project(:bar, "bar", fn _ ->
-        Mix.Task.run("compile", ["--verbose"])
-        assert_received {:mix_shell, :info, ["Generated foo app"]}
-        assert_received {:mix_shell, :info, ["Generated bar app"]}
-        assert File.regular?("_build/dev/lib/foo/ebin/Elixir.Foo.beam")
-        assert File.regular?("_build/dev/lib/bar/ebin/Elixir.Bar.beam")
-
-        # Noop by default
-        assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:noop, []}
-        Mix.Shell.Process.flush()
-
-        # Ok but no compilation when there is no runtime dependency
-        mtime = File.stat!("_build/dev/lib/bar/.mix/compile.elixir").mtime
-        ensure_touched("_build/dev/lib/foo/ebin/Elixir.Foo.beam", mtime)
-
-        mtime = File.stat!("_build/dev/lib/bar/.mix/compile.elixir").mtime
-        ensure_touched("_build/dev/lib/foo/.mix/compile.elixir", mtime)
-
-        assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
-        refute_received {:mix_shell, :info, ["Compiled " <> _]}
-
-        # Add runtime dependency
-        File.write!("lib/bar.ex", """
-        defmodule Bar do
-          def bar, do: Foo.foo
-        end
-        """)
-
-        assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
-        assert_received {:mix_shell, :info, ["Compiled lib/bar.ex"]}
-      end)
-    end)
-  end
-
   test "recompiles after compile time path dependency changes" do
     in_fixture("umbrella_dep/deps/umbrella/apps", fn ->
       Mix.Project.in_project(:bar, "bar", fn _ ->
-        Mix.Task.run("compile", ["--verbose"])
+        Mix.Task.run("compile", [])
 
         # Add compile time dependency
-        File.write!("lib/bar.ex", "defmodule Bar, do: Foo.foo")
+        File.write!("lib/bar.ex", "defmodule Bar, do: Foo.foo()")
 
         assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
         assert_receive {:mix_shell, :info, ["Compiled lib/bar.ex"]}
 
-        # Recompiles for compile time dependencies
+        # Touch to emulate local recompilation
         mtime = File.stat!("_build/dev/lib/bar/.mix/compile.elixir").mtime
         ensure_touched("_build/dev/lib/foo/ebin/Elixir.Foo.beam", mtime)
         ensure_touched("_build/dev/lib/foo/.mix/compile.elixir", mtime)
+
+        assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
+        assert_received {:mix_shell, :info, ["Compiled lib/bar.ex"]}
+
+        # But exports dependencies are not recompiled
+        File.write!("lib/bar.ex", "defmodule Bar, do: (require Foo)")
+
+        assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
+        assert_received {:mix_shell, :info, ["Compiled lib/bar.ex"]}
+
+        # Touch to emulate local recompilation
+        mtime = File.stat!("_build/dev/lib/bar/.mix/compile.elixir").mtime
+        ensure_touched("_build/dev/lib/foo/ebin/Elixir.Foo.beam", mtime)
+        ensure_touched("_build/dev/lib/foo/.mix/compile.elixir", mtime)
+
+        assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
+        refute_received {:mix_shell, :info, ["Compiled lib/bar.ex"]}
+      end)
+
+      # Now let's add a new file to foo
+      Mix.Project.in_project(:foo, "foo", fn _ ->
+        File.write!("lib/foo_bar.ex", """
+        defmodule Foo.Bar do
+          def baz, do: "from bar"
+        end
+        """)
+
+        Mix.Task.clear()
+        assert Mix.Tasks.Compile.run(["--verbose", "--ignore-module-conflict"]) == {:ok, []}
+        Application.unload(:foo)
+        Application.load(:foo)
+      end)
+
+      # And bar can use it without warnings
+      Mix.Project.in_project(:bar, "bar", fn _ ->
+        File.write!("lib/bar.ex", "defmodule Bar, do: Foo.Bar.baz()")
+
+        mtime = File.stat!("_build/dev/lib/bar/.mix/compile.elixir").mtime
+        ensure_touched("_build/dev/lib/foo/.mix/compile.elixir", mtime)
+        ensure_touched("lib/bar.ex", mtime)
 
         assert Mix.Tasks.Compile.Elixir.run(["--verbose"]) == {:ok, []}
         assert_receive {:mix_shell, :info, ["Compiled lib/bar.ex"]}
@@ -479,8 +523,7 @@ defmodule Mix.UmbrellaTest do
       end)
 
       Mix.Project.in_project(:umbrella, ".", fn _ ->
-        Mix.Task.run("compile.protocols")
-        Mix.Task.run("app.start")
+        Mix.Task.run("compile")
         assert Protocol.consolidated?(Bar)
       end)
     end)

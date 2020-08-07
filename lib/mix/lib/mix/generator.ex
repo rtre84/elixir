@@ -12,13 +12,13 @@ defmodule Mix.Generator do
   ## Options
 
     * `:force` - forces creation without a shell prompt
-    * `:quiet` - do not log command output
+    * `:quiet` - does not log command output
 
   ## Examples
 
       iex> Mix.Generator.create_file(".gitignore", "_build\ndeps\n")
       * creating .gitignore
-      :ok
+      true
 
   """
   @spec create_file(Path.t(), iodata, keyword) :: boolean()
@@ -42,13 +42,13 @@ defmodule Mix.Generator do
 
   ## Options
 
-    * `:quiet` - do not log command output
+    * `:quiet` - does not log command output
 
   ## Examples
 
       iex> Mix.Generator.create_directory("path/to/dir")
       * creating path/to/dir
-      :ok
+      true
 
   """
   @spec create_directory(Path.t(), keyword) :: true
@@ -67,13 +67,13 @@ defmodule Mix.Generator do
   ## Options
 
     * `:force` - forces copying without a shell prompt
-    * `:quiet` - do not log command output
+    * `:quiet` - does not log command output
 
   ## Examples
 
-      iex> Mix.Generator.copy_file("source/gitignore", ".gitignore", "_build\ndeps\n")
+      iex> Mix.Generator.copy_file("source/gitignore", ".gitignore")
       * creating .gitignore
-      :ok
+      true
 
   """
   @doc since: "1.9.0"
@@ -85,7 +85,7 @@ defmodule Mix.Generator do
   @doc ~S"""
   Evaluates and copy templates at `source` to `target`.
 
-  The template in `source` is evaluted with the given `assigns`.
+  The template in `source` is evaluated with the given `assigns`.
 
   If `target` already exists and the contents are not the same,
   it asks for user confirmation.
@@ -93,13 +93,14 @@ defmodule Mix.Generator do
   ## Options
 
     * `:force` - forces copying without a shell prompt
-    * `:quiet` - do not log command output
+    * `:quiet` - does not log command output
 
   ## Examples
 
-      iex> Mix.Generator.copy_template("source/gitignore", ".gitignore", [project_path: path])
+      iex> assigns = [project_path: "/Users/joe/newproject"]
+      iex> Mix.Generator.copy_template("source/gitignore", ".gitignore", assigns)
       * creating .gitignore
-      :ok
+      true
 
   """
   @doc since: "1.9.0"
@@ -115,7 +116,7 @@ defmodule Mix.Generator do
   to override it. Returns true otherwise.
   """
   @doc since: "1.9.0"
-  @spec overwrite?(Path.t(), iodata) :: boolean
+  @spec overwrite?(Path.t()) :: boolean
   def overwrite?(path) do
     if File.exists?(path) do
       full = Path.expand(path)

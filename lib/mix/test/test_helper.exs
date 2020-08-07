@@ -2,8 +2,12 @@ Mix.start()
 Mix.shell(Mix.Shell.Process)
 Application.put_env(:mix, :colors, enabled: false)
 
-exclude = if match?({:win32, _}, :os.type()), do: [unix: true], else: [windows: true]
-ExUnit.start(trace: "--trace" in System.argv(), exclude: exclude)
+Logger.remove_backend(:console)
+Application.put_env(:logger, :backends, [])
+
+os_exclude = if match?({:win32, _}, :os.type()), do: [unix: true], else: [windows: true]
+epmd_exclude = if match?({:win32, _}, :os.type()), do: [epmd: true], else: []
+ExUnit.start(trace: "--trace" in System.argv(), exclude: epmd_exclude ++ os_exclude)
 
 unless {1, 7, 4} <= Mix.SCM.Git.git_version() do
   IO.puts(:stderr, "Skipping tests with git sparse checkouts...")
@@ -24,6 +28,10 @@ defmodule MixTest.Case do
     def project do
       [app: :sample, version: "0.1.0", aliases: [sample: "compile"]]
     end
+
+    def application do
+      Process.get({__MODULE__, :application}) || []
+    end
   end
 
   using do
@@ -32,31 +40,25 @@ defmodule MixTest.Case do
     end
   end
 
-  setup config do
-    if apps = config[:apps] do
-      Logger.remove_backend(:console)
-      Application.put_env(:logger, :backends, [])
-    end
+  @apps Enum.map(Application.loaded_applications(), &elem(&1, 0))
 
+  setup do
     on_exit(fn ->
       Application.start(:logger)
       Mix.env(:dev)
       Mix.target(:host)
       Mix.Task.clear()
       Mix.Shell.Process.flush()
-      Mix.ProjectStack.clear_cache()
+      Mix.State.clear_cache()
       Mix.ProjectStack.clear_stack()
       delete_tmp_paths()
 
-      if apps do
-        for app <- apps do
-          Application.stop(app)
-          Application.unload(app)
-        end
-
-        Logger.add_backend(:console, flush: true)
-        Application.put_env(:logger, :backends, [:console])
+      for {app, _, _} <- Application.loaded_applications(), app not in @apps do
+        Application.stop(app)
+        Application.unload(app)
       end
+
+      :ok
     end)
 
     :ok
@@ -138,8 +140,14 @@ defmodule MixTest.Case do
 
   def ensure_touched(file, current) do
     File.touch!(file)
+    mtime = File.stat!(file).mtime
 
-    unless File.stat!(file).mtime > current do
+    if mtime <= current do
+      seconds =
+        :calendar.datetime_to_gregorian_seconds(current) -
+          :calendar.datetime_to_gregorian_seconds(mtime)
+
+      Process.sleep(seconds * 1000)
       ensure_touched(file, current)
     end
   end
@@ -180,18 +188,23 @@ defmodule MixTest.Case do
   end
 end
 
-## Set up Mix home with Rebar
+## Set up globals
 
-home = MixTest.Case.tmp_path(".mix")
+home = MixTest.Case.tmp_path(".home")
 File.mkdir_p!(home)
-System.put_env("MIX_HOME", home)
+System.put_env("HOME", home)
+
+mix = MixTest.Case.tmp_path(".mix")
+File.mkdir_p!(mix)
+System.put_env("MIX_HOME", mix)
+
 System.delete_env("XDG_DATA_HOME")
 System.delete_env("XDG_CONFIG_HOME")
 
 rebar = System.get_env("REBAR") || Path.expand("fixtures/rebar", __DIR__)
-File.cp!(rebar, Path.join(home, "rebar"))
+File.cp!(rebar, Path.join(mix, "rebar"))
 rebar = System.get_env("REBAR3") || Path.expand("fixtures/rebar3", __DIR__)
-File.cp!(rebar, Path.join(home, "rebar3"))
+File.cp!(rebar, Path.join(mix, "rebar3"))
 
 ## Copy fixtures to tmp
 
@@ -205,6 +218,8 @@ Enum.each(fixtures, fn fixture ->
 end)
 
 ## Generate Git repo fixtures
+System.cmd("git", ~w[config --global user.email "mix@example.com"])
+System.cmd("git", ~w[config --global user.name "mix-repo"])
 
 # Git repo
 target = Path.expand("fixtures/git_repo", __DIR__)
@@ -218,11 +233,12 @@ unless File.dir?(target) do
   """)
 
   File.cd!(target, fn ->
-    System.cmd("git", ~w[-c core.hooksPath='' init])
-    System.cmd("git", ~w[config user.email "mix@example.com"])
-    System.cmd("git", ~w[config user.name "mix-repo"])
+    System.cmd("git", ~w[init])
     System.cmd("git", ~w[add .])
     System.cmd("git", ~w[commit -m "bad"])
+    System.cmd("git", ~w[checkout -q -b main])
+    System.cmd("git", ~w[symbolic-ref HEAD refs/heads/main])
+    System.cmd("git", ~w[branch -d master])
   end)
 
   File.write!(Path.join(target, "mix.exs"), """
@@ -309,9 +325,7 @@ unless File.dir?(target) do
   """)
 
   File.cd!(target, fn ->
-    System.cmd("git", ~w[-c core.hooksPath='' init])
-    System.cmd("git", ~w[config user.email "mix@example.com"])
-    System.cmd("git", ~w[config user.name "mix-repo"])
+    System.cmd("git", ~w[init])
     System.cmd("git", ~w[add .])
     System.cmd("git", ~w[commit -m without-dep])
   end)
@@ -364,9 +378,7 @@ unless File.dir?(target) do
   """)
 
   File.cd!(target, fn ->
-    System.cmd("git", ~w[-c core.hooksPath='' init])
-    System.cmd("git", ~w[config user.email "mix@example.com"])
-    System.cmd("git", ~w[config user.name "mix-repo"])
+    System.cmd("git", ~w[init])
     System.cmd("git", ~w[add .])
     System.cmd("git", ~w[commit -m "ok"])
   end)

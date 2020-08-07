@@ -1,6 +1,6 @@
 defmodule Mix.Tasks.Compile.Erlang do
   use Mix.Task.Compiler
-  import Mix.Compilers.Erlang
+  alias Mix.Compilers.Erlang
 
   @recursive true
   @manifest "compile.erlang"
@@ -41,14 +41,14 @@ defmodule Mix.Tasks.Compile.Erlang do
       Defaults to `"include"`.
 
     * `:erlc_options` - compilation options that apply to Erlang's
-      compiler. Defaults to `[:debug_info]`.
+      compiler. Defaults to `[]`.
 
       For a complete list of options, see `:compile.file/2`.
 
-  For example, to configure the `erlc_options` for your Erlang project you
-  may run:
+      The option `:debug_info` is always added to the end of it. You can
+      disable that using:
 
-      erlc_options: [:debug_info, {:i, 'path/to/include'}]
+          erlc_options: [debug_info: false]
 
   """
 
@@ -62,23 +62,23 @@ defmodule Mix.Tasks.Compile.Erlang do
     do_run(files, opts, project, source_paths)
   end
 
-  defp do_run([], _, _, _), do: :noop
+  defp do_run([], _, _, _), do: {:noop, []}
 
   defp do_run(files, opts, project, source_paths) do
-    include_path = to_erl_file(project[:erlc_include_path])
-    compile_path = to_erl_file(Mix.Project.compile_path(project))
-
+    include_path = Erlang.to_erl_file(project[:erlc_include_path])
+    compile_path = Erlang.to_erl_file(Mix.Project.compile_path(project))
     erlc_options = project[:erlc_options] || []
 
     unless is_list(erlc_options) do
       Mix.raise(":erlc_options should be a list of options, got: #{inspect(erlc_options)}")
     end
 
-    erlc_options = erlc_options ++ [:return, :report, outdir: compile_path, i: include_path]
+    erlc_options =
+      erlc_options ++ [:debug_info, :return, :report, outdir: compile_path, i: include_path]
 
     erlc_options =
       Enum.map(erlc_options, fn
-        {kind, dir} when kind in [:i, :outdir] -> {kind, to_erl_file(dir)}
+        {kind, dir} when kind in [:i, :outdir] -> {kind, Erlang.to_erl_file(dir)}
         opt -> opt
       end)
 
@@ -90,14 +90,14 @@ defmodule Mix.Tasks.Compile.Erlang do
       |> sort_dependencies()
       |> Enum.map(&annotate_target(&1, compile_path, opts[:force]))
 
-    Mix.Compilers.Erlang.compile(manifest(), tuples, opts, fn input, _output ->
-      # We're purging the module because a previous compiler (e.g. Phoenix)
+    Erlang.compile(manifest(), tuples, opts, fn input, _output ->
+      # We're purging the module because a previous compiler (for example, Phoenix)
       # might have already loaded the previous version of it.
       module = input |> Path.basename(".erl") |> String.to_atom()
       :code.purge(module)
       :code.delete(module)
 
-      file = to_erl_file(Path.rootname(input, ".erl"))
+      file = Erlang.to_erl_file(Path.rootname(input, ".erl"))
 
       case :compile.file(file, erlc_options) do
         {:error, :badarg} ->
@@ -114,7 +114,6 @@ defmodule Mix.Tasks.Compile.Erlang do
 
   @impl true
   def manifests, do: [manifest()]
-
   defp manifest, do: Path.join(Mix.Project.manifest_path(), @manifest)
 
   @impl true
@@ -139,7 +138,7 @@ defmodule Mix.Tasks.Compile.Erlang do
       invalid: false
     }
 
-    case :epp.parse_file(to_erl_file(file), include_paths, []) do
+    case :epp.parse_file(Erlang.to_erl_file(file), include_paths, []) do
       {:ok, forms} ->
         [List.foldl(tl(forms), erl_file, &do_form(file, &1, &2)) | acc]
 

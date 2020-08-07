@@ -30,10 +30,10 @@ defmodule ExUnit.Formatter do
   and should be ignored:
 
     * `{:case_started, test_module}` -
-      a test module has started. See `ExUnit.TestCase` for details.
+      a test module has started. See `ExUnit.TestModule` for details.
 
     * `{:case_finished, test_module}` -
-      a test module has finished. See `ExUnit.TestCase` for details.
+      a test module has finished. See `ExUnit.TestModule` for details.
 
   The full ExUnit configuration is passed as the argument to `c:GenServer.init/1` callback when the
   formatters are started. If you need to do runtime configuration of a
@@ -49,7 +49,12 @@ defmodule ExUnit.Formatter do
 
   import Exception, only: [format_stacktrace_entry: 1, format_file_line: 3]
 
+  alias ExUnit.Diff
+  alias Inspect.Algebra
+
   @counter_padding "     "
+  @mailbox_label_padding @counter_padding <> "  "
+  @formatter_exceptions [ExUnit.AssertionError, FunctionClauseError]
   @no_value ExUnit.AssertionError.no_value()
 
   @doc """
@@ -132,26 +137,39 @@ defmodule ExUnit.Formatter do
 
   @doc false
   def format_assertion_error(%ExUnit.AssertionError{} = struct) do
-    format_assertion_error(%{}, struct, [], :infinity, fn _, msg -> msg end, "")
+    format_exception(%{}, struct, [], :infinity, fn _, msg -> msg end, "") |> elem(0)
   end
 
-  def format_assertion_error(test, struct, stack, width, formatter, counter_padding) do
+  defp format_exception(test, %ExUnit.AssertionError{} = struct, stack, width, formatter, pad) do
     label_padding_size = if has_value?(struct.right), do: 7, else: 6
     padding_size = label_padding_size + byte_size(@counter_padding)
-    inspect = &inspect_multiline(&1, padding_size, width)
-    {left, right} = format_sides(struct, formatter, inspect)
 
-    [
-      note: if_value(struct.message, &format_message(&1, formatter)),
-      doctest: if_value(struct.doctest, &code_multiline(&1, 2 + byte_size(@counter_padding))),
-      code: if_value(struct.expr, &code_multiline(&1, padding_size)),
-      code: unless_value(struct.expr, fn -> get_code(test, stack) || @no_value end),
-      arguments: if_value(struct.args, &format_args(&1, width)),
-      left: left,
-      right: right
-    ]
-    |> format_meta(formatter, label_padding_size)
-    |> make_into_lines(counter_padding)
+    code_multiline =
+      if struct.doctest != @no_value,
+        do: &pad_multiline(&1, padding_size),
+        else: &code_multiline(&1, padding_size)
+
+    formatted =
+      [
+        note: if_value(struct.message, &format_message(&1, formatter)),
+        doctest: if_value(struct.doctest, &pad_multiline(&1, 2 + byte_size(@counter_padding))),
+        code: if_value(struct.expr, code_multiline),
+        code: unless_value(struct.expr, fn -> get_code(test, stack) || @no_value end),
+        arguments: if_value(struct.args, &format_args(&1, width))
+      ]
+      |> Kernel.++(format_context(struct, formatter, padding_size, width))
+      |> format_meta(formatter, pad, label_padding_size)
+      |> IO.iodata_to_binary()
+
+    {formatted, stack}
+  end
+
+  defp format_exception(test, %FunctionClauseError{} = struct, stack, _width, formatter, _pad) do
+    {blamed, stack} = Exception.blame(:error, struct, stack)
+    banner = Exception.format_banner(:error, struct)
+    blamed = FunctionClauseError.blame(blamed, &inspect/1, &blame_match(&1, &2, formatter))
+    message = error_info(banner, formatter) <> "\n" <> pad(String.trim_leading(blamed, "\n"))
+    {message <> format_code(test, stack, formatter), stack}
   end
 
   @doc false
@@ -173,29 +191,47 @@ defmodule ExUnit.Formatter do
       end)
   end
 
-  defp format_kind_reason(
-         test,
-         :error,
-         %ExUnit.AssertionError{} = struct,
-         stack,
-         width,
-         formatter
-       ) do
-    {format_assertion_error(test, struct, stack, width, formatter, @counter_padding), stack}
+  defp format_kind_reason(test, :error, %mod{} = struct, stack, width, formatter)
+       when mod in @formatter_exceptions do
+    format_exception(test, struct, stack, width, formatter, @counter_padding)
   end
 
-  defp format_kind_reason(test, :error, %FunctionClauseError{} = struct, stack, _width, formatter) do
-    {blamed, stack} = Exception.blame(:error, struct, stack)
-    banner = Exception.format_banner(:error, struct)
-    blamed = FunctionClauseError.blame(blamed, &inspect/1, &blame_match(&1, &2, formatter))
-    message = error_info(banner, formatter) <> "\n" <> pad(String.trim_leading(blamed, "\n"))
-    {message <> format_code(test, stack, formatter), stack}
+  defp format_kind_reason(test, kind, reason, stack, width, formatter) do
+    case linked_or_trapped_exit(kind, reason) do
+      {header, wrapped_reason, wrapped_stack} ->
+        struct = Exception.normalize(:error, wrapped_reason, wrapped_stack)
+
+        {formatted_reason, _} =
+          format_exception(test, struct, wrapped_stack, width, formatter, @counter_padding)
+
+        formatted_stack = format_stacktrace(wrapped_stack, test.module, test.name, formatter)
+        {error_info(header, formatter) <> pad(formatted_reason <> formatted_stack), stack}
+
+      :error ->
+        {reason, stack} = Exception.blame(kind, reason, stack)
+        message = error_info(Exception.format_banner(kind, reason), formatter)
+        {message <> format_code(test, stack, formatter), stack}
+    end
   end
 
-  defp format_kind_reason(test, kind, reason, stack, _width, formatter) do
-    message = error_info(Exception.format_banner(kind, reason), formatter)
-    {message <> format_code(test, stack, formatter), stack}
+  defp linked_or_trapped_exit({:EXIT, pid}, {reason, [_ | _] = stack})
+       when reason.__struct__ in @formatter_exceptions
+       when reason == :function_clause do
+    {"** (EXIT from #{inspect(pid)}) an exception was raised:\n", reason, stack}
   end
+
+  defp linked_or_trapped_exit(:exit, {{reason, [_ | _] = stack}, {mod, fun, args}})
+       when is_atom(mod) and is_atom(fun) and is_list(args) and
+              reason.__struct__ in @formatter_exceptions
+       when is_atom(mod) and is_atom(fun) and is_list(args) and reason == :function_clause do
+    {
+      "** (exit) exited in: #{Exception.format_mfa(mod, fun, args)}\n   ** (EXIT) an exception was raised:",
+      reason,
+      stack
+    }
+  end
+
+  defp linked_or_trapped_exit(_kind, _reason), do: :error
 
   defp format_code(test, stack, formatter) do
     if snippet = get_code(test, stack) do
@@ -226,16 +262,18 @@ defmodule ExUnit.Formatter do
     nil
   end
 
-  defp blame_match(%{match?: true, node: node}, _, _formatter), do: Macro.to_string(node)
+  defp blame_match(%{match?: true, node: node}, _, _formatter),
+    do: Macro.to_string(node)
 
   defp blame_match(%{match?: false, node: node}, _, formatter),
     do: formatter.(:blame_diff, Macro.to_string(node))
 
-  defp blame_match(_, string, _formatter), do: string
+  defp blame_match(_, string, _formatter),
+    do: string
 
-  defp format_meta(fields, formatter, padding_size) do
+  defp format_meta(fields, formatter, padding, padding_size) do
     for {label, value} <- fields, has_value?(value) do
-      format_label(label, formatter, padding_size) <> value
+      [padding, format_label(label, formatter, padding_size), value, "\n"]
     end
   end
 
@@ -280,81 +318,138 @@ defmodule ExUnit.Formatter do
         """
       end
 
-    "\n" <> IO.iodata_to_binary(entries)
+    ["\n" | entries]
   end
 
-  defp code_multiline(expr, padding_size) when is_binary(expr) do
-    padding = String.duplicate(" ", padding_size)
-    String.replace(expr, "\n", "\n" <> padding)
-  end
+  @assertions [
+    :assert,
+    :assert_raise,
+    :assert_receive,
+    :assert_received,
+    :refute,
+    :refute_receive,
+    :refute_received
+  ]
 
-  defp code_multiline({fun, _, [expr]}, padding_size) when is_atom(fun) do
-    code_multiline(Atom.to_string(fun) <> " " <> Macro.to_string(expr), padding_size)
+  defp code_multiline({fun, _, [expr]}, padding_size) when fun in @assertions do
+    pad_multiline(Atom.to_string(fun) <> " " <> Macro.to_string(expr), padding_size)
   end
 
   defp code_multiline(expr, padding_size) do
-    code_multiline(Macro.to_string(expr), padding_size)
+    pad_multiline(Macro.to_string(expr), padding_size)
   end
 
   defp inspect_multiline(expr, padding_size, width) do
-    padding = String.duplicate(" ", padding_size)
     width = if width == :infinity, do: width, else: width - padding_size
 
-    inspect(expr, pretty: true, width: width)
-    |> String.replace("\n", "\n" <> padding)
+    expr
+    |> Algebra.to_doc(%Inspect.Opts{width: width})
+    |> Algebra.group()
+    |> Algebra.nest(padding_size)
+    |> Algebra.format(width)
   end
 
-  defp make_into_lines(reasons, padding) do
-    padding <> Enum.join(reasons, "\n" <> padding) <> "\n"
+  defp format_context(%{context: {:mailbox, _pins, []}}, _, _, _) do
+    []
   end
 
-  defp format_sides(struct, formatter, inspect) do
-    %{left: left, right: right} = struct
+  defp format_context(
+         %{left: left, context: {:mailbox, pins, mailbox}},
+         formatter,
+         padding_size,
+         width
+       ) do
+    formatted_mailbox =
+      for message <- mailbox do
+        {pattern, value} =
+          format_sides(
+            left,
+            message,
+            {:match, pins},
+            formatter,
+            padding_size + 5,
+            width
+          )
 
-    case format_diff(left, right, formatter) do
-      {left, right} ->
-        {IO.iodata_to_binary(left), IO.iodata_to_binary(right)}
+        [
+          "\n",
+          @mailbox_label_padding,
+          format_label(:pattern, formatter, 9),
+          pattern,
+          "\n",
+          @mailbox_label_padding,
+          format_label(:value, formatter, 9),
+          value
+        ]
+      end
+
+    [mailbox: Enum.join(formatted_mailbox, "\n")]
+  end
+
+  defp format_context(
+         %{left: left, right: right, context: context},
+         formatter,
+         padding_size,
+         width
+       ) do
+    {left, right} = format_sides(left, right, context, formatter, padding_size, width)
+    [left: left, right: right]
+  end
+
+  defp format_sides(left, right, context, formatter, padding_size, width) do
+    inspect = &inspect_multiline(&1, padding_size, width)
+    content_width = if width == :infinity, do: width, else: width - padding_size
+
+    case format_diff(left, right, context, formatter) do
+      {result, _env} ->
+        left =
+          result.left
+          |> Diff.to_algebra(&colorize_diff_delete(&1, formatter))
+          |> Algebra.nest(padding_size)
+          |> Algebra.format(content_width)
+
+        right =
+          result.right
+          |> Diff.to_algebra(&colorize_diff_insert(&1, formatter))
+          |> Algebra.nest(padding_size)
+          |> Algebra.format(content_width)
+
+        {left, right}
 
       nil ->
-        {if_value(left, inspect), if_value(right, inspect)}
+        {if_value(left, &code_multiline(&1, padding_size)), if_value(right, inspect)}
     end
   end
 
-  defp format_diff(left, right, formatter) do
+  defp format_diff(left, right, context, formatter) do
     if has_value?(left) and has_value?(right) and formatter.(:diff_enabled?, false) do
-      if script = edit_script(left, right) do
-        colorize_diff(script, formatter, {[], []})
-      end
+      find_diff(left, right, context)
     end
   end
 
-  defp colorize_diff(script, formatter, acc) when is_list(script) do
-    Enum.reduce(script, acc, &colorize_diff(&1, formatter, &2))
+  defp colorize_diff_delete(doc, formatter) do
+    format = colorize_format(doc, :diff_delete, :diff_delete_whitespace)
+    formatter.(format, doc)
   end
 
-  defp colorize_diff({:eq, content}, _formatter, {left, right}) do
-    {[left | content], [right | content]}
+  defp colorize_diff_insert(doc, formatter) do
+    format = colorize_format(doc, :diff_insert, :diff_insert_whitespace)
+    formatter.(format, doc)
   end
 
-  defp colorize_diff({:del, content}, formatter, {left, right}) do
-    format = colorize_format(content, :diff_delete, :diff_delete_whitespace)
-    {[left | formatter.(format, content)], right}
-  end
-
-  defp colorize_diff({:ins, content}, formatter, {left, right}) do
-    format = colorize_format(content, :diff_insert, :diff_insert_whitespace)
-    {left, [right | formatter.(format, content)]}
-  end
-
-  defp colorize_format(content, normal, whitespace) do
+  defp colorize_format(content, normal, whitespace) when is_binary(content) do
     if String.trim_leading(content) == "", do: whitespace, else: normal
   end
 
-  defp edit_script(left, right) do
-    task = Task.async(ExUnit.Diff, :script, [left, right])
+  defp colorize_format(_doc, normal, _whitespace) do
+    normal
+  end
+
+  defp find_diff(left, right, context) do
+    task = Task.async(Diff, :compute, [left, right, context])
 
     case Task.yield(task, 1500) || Task.shutdown(task, :brutal_kill) do
-      {:ok, script} -> script
+      {:ok, diff} -> diff
       nil -> nil
     end
   end
@@ -416,7 +511,12 @@ defmodule ExUnit.Formatter do
   defp test_location(msg, formatter), do: test_location(formatter.(:location_info, msg), nil)
 
   defp pad(msg) do
-    "     " <> String.replace(msg, "\n", "\n     ") <> "\n"
+    "     " <> pad_multiline(msg, 5) <> "\n"
+  end
+
+  defp pad_multiline(expr, padding_size) when is_binary(expr) do
+    padding = String.duplicate(" ", padding_size)
+    String.replace(expr, "\n", "\n" <> padding)
   end
 
   defp error_info(msg, nil), do: pad(msg)

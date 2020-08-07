@@ -88,6 +88,71 @@ defmodule LoggerTest do
 
   test "level/0" do
     assert Logger.level() == :debug
+
+    Logger.configure(level: :all)
+    assert Logger.level() == :all
+
+    Logger.configure(level: :info)
+    assert Logger.level() == :info
+
+    Logger.configure(level: :notice)
+    assert Logger.level() == :notice
+
+    Logger.configure(level: :warn)
+    assert Logger.level() == :warning
+
+    Logger.configure(level: :warning)
+    assert Logger.level() == :warning
+
+    Logger.configure(level: :error)
+    assert Logger.level() == :error
+
+    Logger.configure(level: :critical)
+    assert Logger.level() == :critical
+
+    Logger.configure(level: :alert)
+    assert Logger.level() == :alert
+
+    Logger.configure(level: :emergency)
+    assert Logger.level() == :emergency
+
+    Logger.configure(level: :none)
+    assert Logger.level() == :none
+  after
+    Logger.configure(level: :debug)
+  end
+
+  test "per-module levels" do
+    defmodule PerModuleLevels do
+      def debug, do: Logger.debug("debug_msg")
+
+      def error, do: Logger.error("error_msg")
+    end
+
+    assert capture_log(fn -> assert PerModuleLevels.debug() == :ok end) =~ "debug_msg"
+    assert capture_log(fn -> assert PerModuleLevels.error() == :ok end) =~ "error_msg"
+
+    Logger.put_module_level(PerModuleLevels, :error)
+
+    assert capture_log(fn -> assert PerModuleLevels.debug() == :ok end) == ""
+    assert capture_log(fn -> Logger.debug("outer_debug_msg") end) =~ "outer_debug_msg"
+    assert capture_log(fn -> assert PerModuleLevels.error() == :ok end) =~ "error_msg"
+
+    Logger.put_module_level(PerModuleLevels, :debug)
+
+    assert capture_log(:error, fn -> assert PerModuleLevels.debug() == :ok end) =~ "debug_msg"
+    assert capture_log(:error, fn -> Logger.debug("outer_debug_msg") end) == ""
+    assert capture_log(:error, fn -> assert PerModuleLevels.error() == :ok end) =~ "error_msg"
+
+    Logger.delete_module_level(PerModuleLevels)
+
+    assert capture_log(fn -> assert PerModuleLevels.debug() == :ok end) =~ "debug_msg"
+    assert capture_log(fn -> assert PerModuleLevels.error() == :ok end) =~ "error_msg"
+
+    Logger.put_module_level(PerModuleLevels, :error)
+    assert capture_log(fn -> assert PerModuleLevels.debug() == :ok end) == ""
+    Logger.delete_all_module_levels()
+    assert capture_log(fn -> assert PerModuleLevels.debug() == :ok end) =~ "debug_msg"
   end
 
   test "process metadata" do
@@ -135,6 +200,67 @@ defmodule LoggerTest do
            end) =~ msg("module=Function [info]  ok")
   end
 
+  describe "log with function" do
+    test "supports iolist" do
+      fun = fn -> ["ok", ?:, 'example'] end
+
+      assert capture_log(fn ->
+               assert Logger.bare_log(:info, fun, application: nil, module: FunctionTest) == :ok
+             end) =~ msg("module=FunctionTest [info]  ok:example")
+    end
+
+    test "supports binaries" do
+      fun = fn -> "ok:example" end
+
+      assert capture_log(fn ->
+               assert Logger.bare_log(:info, fun, application: nil, module: FunctionTest) == :ok
+             end) =~ msg("module=FunctionTest [info]  ok:example")
+    end
+  end
+
+  describe "report logging" do
+    test "supports maps" do
+      assert capture_log(fn ->
+               assert Logger.bare_log(:info, %{foo: 10}, application: nil, module: FunctionTest) ==
+                        :ok
+             end) =~ msg("module=FunctionTest [info]  [foo: 10]")
+    end
+
+    test "supports keyword" do
+      assert capture_log(fn ->
+               assert Logger.bare_log(:info, foo: 10) == :ok
+             end) =~ msg("[info]  [foo: 10]")
+    end
+
+    test "supports custom report_cb" do
+      report_cb = fn %{foo: foo} -> {"Foo is ~B", [foo]} end
+
+      assert capture_log(fn ->
+               assert Logger.bare_log(:info, %{foo: 10}, report_cb: report_cb) == :ok
+             end) =~ msg("[info]  Foo is 10")
+
+      report_cb = fn %{foo: foo}, _opts -> "Foo is #{foo}" end
+
+      assert capture_log(fn ->
+               assert Logger.bare_log(:info, %{foo: 20}, report_cb: report_cb) == :ok
+             end) =~ msg("[info]  Foo is 20")
+    end
+
+    test "support function that return report" do
+      assert capture_log(fn ->
+               assert Logger.bare_log(:info, fn -> %{foo: 10} end) == :ok
+             end) =~ msg("[info]  [foo: 10]")
+
+      assert capture_log(fn ->
+               assert Logger.bare_log(:info, fn -> {%{foo: 10}, []} end) == :ok
+             end) =~ msg("[info]  [foo: 10]")
+
+      assert capture_log(fn ->
+               assert Logger.bare_log(:info, fn -> {[foo: 10], []} end) == :ok
+             end) =~ msg("[info]  [foo: 10]")
+    end
+  end
+
   test "enable/1 and disable/1" do
     assert Logger.metadata([]) == :ok
 
@@ -164,8 +290,13 @@ defmodule LoggerTest do
   test "compare_levels/2" do
     assert Logger.compare_levels(:debug, :debug) == :eq
     assert Logger.compare_levels(:debug, :info) == :lt
+    assert Logger.compare_levels(:debug, :notice) == :lt
     assert Logger.compare_levels(:debug, :warn) == :lt
+    assert Logger.compare_levels(:debug, :warning) == :lt
     assert Logger.compare_levels(:debug, :error) == :lt
+    assert Logger.compare_levels(:debug, :critical) == :lt
+    assert Logger.compare_levels(:debug, :alert) == :lt
+    assert Logger.compare_levels(:debug, :emergency) == :lt
 
     assert Logger.compare_levels(:info, :debug) == :gt
     assert Logger.compare_levels(:info, :info) == :eq
@@ -183,76 +314,132 @@ defmodule LoggerTest do
     assert Logger.compare_levels(:error, :error) == :eq
   end
 
-  test "debug/2" do
+  test "deprecated :warn" do
     assert capture_log(fn ->
-             assert Logger.debug("hello", []) == :ok
-           end) =~ msg_with_meta("[debug] hello")
+             Logger.warn("hello") == :ok
+           end) =~ "[warn]"
 
-    assert capture_log(:info, fn ->
-             assert Logger.debug("hello", []) == :ok
-           end) == ""
+    assert capture_log(fn ->
+             Logger.log(:warn, "hello") == :ok
+           end) =~ "[warn]"
 
-    assert capture_log(:info, fn ->
-             assert Logger.debug(raise("not invoked"), []) == :ok
-           end) == ""
+    assert capture_log(fn ->
+             Logger.bare_log(:warn, "hello") == :ok
+           end) =~ "[warn]"
   end
 
-  test "info/2" do
-    assert capture_log(fn ->
-             assert Logger.info("hello", []) == :ok
-           end) =~ msg_with_meta("[info]  hello")
+  describe "levels" do
+    test "debug/2" do
+      assert capture_log(fn ->
+               assert Logger.debug("hello", []) == :ok
+             end) =~ msg_with_meta("[debug] hello")
 
-    assert capture_log(:warn, fn ->
-             assert Logger.info("hello", []) == :ok
-           end) == ""
+      assert capture_log(:info, fn ->
+               assert Logger.debug("hello", []) == :ok
+             end) == ""
 
-    assert capture_log(:warn, fn ->
-             assert Logger.info(raise("not invoked"), []) == :ok
-           end) == ""
-  end
-
-  test "warn/2" do
-    assert capture_log(fn ->
-             assert Logger.warn("hello", []) == :ok
-           end) =~ msg_with_meta("[warn]  hello")
-
-    assert capture_log(:error, fn ->
-             assert Logger.warn("hello", []) == :ok
-           end) == ""
-
-    assert capture_log(:error, fn ->
-             assert Logger.warn(raise("not invoked"), []) == :ok
-           end) == ""
-  end
-
-  test "error/2" do
-    assert capture_log(fn ->
-             assert Logger.error("hello", []) == :ok
-           end) =~ msg_with_meta("[error] hello")
-  end
-
-  test "remove unused calls at compile time based on the level" do
-    Logger.configure(compile_time_purge_level: :info)
-
-    defmodule PurgeLevel do
-      def debug do
-        Logger.debug("hello")
-      end
-
-      def info do
-        Logger.info("hello")
-      end
+      assert capture_log(:info, fn ->
+               assert Logger.debug(raise("not invoked"), []) == :ok
+             end) == ""
     end
 
-    assert capture_log(fn ->
-             assert PurgeLevel.debug() == :ok
-           end) == ""
+    test "info/2" do
+      assert capture_log(fn ->
+               assert Logger.info("hello", []) == :ok
+             end) =~ msg_with_meta("[info]  hello")
 
-    assert capture_log(fn ->
-             assert PurgeLevel.info() == :ok
-           end) =~ msg("module=LoggerTest.PurgeLevel [info]  hello")
-  after
-    Logger.configure(compile_time_purge_level: :debug)
+      assert capture_log(:notice, fn ->
+               assert Logger.info("hello", []) == :ok
+             end) == ""
+
+      assert capture_log(:notice, fn ->
+               assert Logger.info(raise("not invoked"), []) == :ok
+             end) == ""
+    end
+
+    test "warning/2" do
+      assert capture_log(fn ->
+               assert Logger.warning("hello", []) == :ok
+             end) =~ msg_with_meta("[warn]  hello")
+
+      assert capture_log(:error, fn ->
+               assert Logger.warning("hello", []) == :ok
+             end) == ""
+
+      assert capture_log(:error, fn ->
+               assert Logger.warning(raise("not invoked"), []) == :ok
+             end) == ""
+    end
+
+    test "warn/2" do
+      assert capture_log(fn ->
+               assert Logger.warn("hello", []) == :ok
+             end) =~ msg_with_meta("[warn]  hello")
+
+      assert capture_log(:error, fn ->
+               assert Logger.warn("hello", []) == :ok
+             end) == ""
+
+      assert capture_log(:error, fn ->
+               assert Logger.warn(raise("not invoked"), []) == :ok
+             end) == ""
+    end
+
+    test "error/2" do
+      assert capture_log(fn ->
+               assert Logger.error("hello", []) == :ok
+             end) =~ msg_with_meta("[error] hello")
+
+      assert capture_log(:critical, fn ->
+               assert Logger.error("hello", []) == :ok
+             end) == ""
+
+      assert capture_log(:critical, fn ->
+               assert Logger.error(raise("not invoked"), []) == :ok
+             end) == ""
+    end
+
+    test "critical/2" do
+      assert capture_log(fn ->
+               assert Logger.critical("hello", []) == :ok
+             end) =~ msg_with_meta("[error] hello")
+
+      assert capture_log(:alert, fn ->
+               assert Logger.critical("hello", []) == :ok
+             end) == ""
+
+      assert capture_log(:alert, fn ->
+               assert Logger.critical(raise("not invoked"), []) == :ok
+             end) == ""
+    end
+
+    test "alert/2" do
+      assert capture_log(fn ->
+               assert Logger.alert("hello", []) == :ok
+             end) =~ msg_with_meta("[error] hello")
+
+      assert capture_log(:emergency, fn ->
+               assert Logger.alert("hello", []) == :ok
+             end) == ""
+
+      assert capture_log(:emergency, fn ->
+               assert Logger.alert(raise("not invoked"), []) == :ok
+             end) == ""
+    end
+
+    test "emergency/2" do
+      assert capture_log(fn ->
+               assert Logger.emergency("hello", []) == :ok
+             end) =~ msg_with_meta("[error] hello")
+
+      assert capture_log(:none, fn ->
+               assert Logger.emergency("hello", []) == :ok
+             end) == ""
+
+      assert capture_log(:none, fn ->
+               assert Logger.emergency(raise("not invoked"), []) == :ok
+             end) == ""
+    end
   end
 
   test "remove unused calls at compile time based on matching metadata" do
@@ -283,6 +470,7 @@ defmodule LoggerTest do
       def level_filter do
         Logger.info("info_filter")
         Logger.warn("warn_filter")
+        Logger.warning("warning_filter")
       end
 
       def works do
@@ -306,25 +494,6 @@ defmodule LoggerTest do
   after
     Logger.configure(compile_time_application: nil)
     Logger.configure(compile_time_purge_matching: [])
-  end
-
-  test "unused variable warnings suppressed when we remove macros from the AST" do
-    Logger.configure(compile_time_purge_level: :info)
-
-    # This should not warn, even if the Logger call is purged from the AST.
-    assert ExUnit.CaptureIO.capture_io(:stderr, fn ->
-             defmodule Unused do
-               require Logger
-
-               def hello(a, b, c) do
-                 Logger.debug(["a: ", inspect(a), ", b: ", inspect(b)], c: c)
-               end
-             end
-           end) == ""
-
-    assert LoggerTest.Unused.hello(1, 2, 3) == :ok
-  after
-    Logger.configure(compile_time_purge_level: :debug)
   end
 
   test "set application metadata at compile time" do
@@ -362,43 +531,21 @@ defmodule LoggerTest do
     Logger.configure(truncate: 8096)
   end
 
-  test "log/2 with to_string/1 conversion" do
-    Logger.configure(truncate: 4)
-    assert capture_log(fn -> Logger.log(:debug, :hello) end) =~ "hell (truncated)"
-  after
-    Logger.configure(truncate: 8096)
-  end
-
   test "log/2 does not fails when the logger is off" do
     logger = Process.whereis(Logger)
     Process.unregister(Logger)
 
     try do
-      assert Logger.log(:debug, "hello") == {:error, :noproc}
+      assert Logger.log(:debug, "hello") == :ok
     after
       Process.register(logger, Logger)
     end
   end
 
-  test "log/2 prunes bad unicode chars" do
+  test "log/2 prunes bad Unicode chars" do
     assert capture_log(fn ->
              assert Logger.log(:debug, "he" <> <<185>> <> "lo") == :ok
            end) =~ "he�lo"
-  end
-
-  test "logging something that is not a binary or chardata fails right away" do
-    assert_raise Protocol.UndefinedError,
-                 "protocol String.Chars not implemented for %{} of type Map",
-                 fn -> Logger.log(:debug, %{}) end
-
-    message =
-      "cannot truncate chardata because it contains something that is not valid chardata: %{}"
-
-    # Something that looks like chardata but then inside isn't still raises an error, but a
-    # different one.
-    assert_raise ArgumentError, message, fn ->
-      Logger.log(:debug, [%{}])
-    end
   end
 
   test "stops the application silently" do
@@ -418,6 +565,29 @@ defmodule LoggerTest do
     Application.start(:logger)
   end
 
+  test "starts the application with custom options" do
+    Logger.App.stop()
+    Application.put_env(:logger, :start_options, spawn_opt: [priority: :high])
+    Application.start(:logger)
+    assert Process.info(Process.whereis(Logger), :priority) == {:priority, :high}
+  after
+    Application.put_env(:logger, :start_options, [])
+    Logger.App.stop()
+    Application.start(:logger)
+  end
+
+  test "starts the application with warn level" do
+    Logger.App.stop()
+    assert %{level: :notice} = :logger.get_primary_config()
+    Application.put_env(:logger, :level, :warn)
+    Application.start(:logger)
+    assert %{level: :warning} = :logger.get_primary_config()
+  after
+    Application.delete_env(:logger, :level)
+    Logger.App.stop()
+    Application.start(:logger)
+  end
+
   test "configure/1 sets options" do
     Logger.configure(sync_threshold: 10)
     Logger.configure(truncate: 4048)
@@ -431,11 +601,9 @@ defmodule LoggerTest do
     assert Application.get_env(:logger, :discard_threshold) == 10_000
     assert Application.get_env(:logger, :translator_inspect_opts) == [limit: 3]
 
-    {_, log_data} = Logger.Config.log_data(:debug)
+    assert {:ok, %{config: log_data}} = :logger.get_handler_config(Logger)
     assert log_data.utc_log == true
-
-    translation_data = Logger.Config.translation_data()
-    assert translation_data.truncate == 4048
+    assert log_data.truncate == 4048
   after
     Logger.configure(sync_threshold: 20)
     Logger.configure(truncate: 8096)
@@ -450,7 +618,7 @@ defmodule LoggerTest do
     log =
       capture_log(fn ->
         :sys.suspend(Logger)
-        for _ <- 1..10, do: Logger.warn("warning!")
+        for _ <- 1..10, do: Logger.warning("warning!")
         :sys.resume(Logger)
         Logger.flush()
 
@@ -479,11 +647,51 @@ defmodule LoggerTest do
     :ok = Logger.configure(level: :debug)
 
     try do
-      Application.put_env(:logger, :level, :error)
       assert Logger.App.config_change([level: :error], [], []) === :ok
       assert Logger.level() === :error
     after
       Logger.configure(level: :debug)
+    end
+  end
+
+  describe "OTP integration" do
+    test "changes level in both" do
+      assert :logger.get_primary_config().level == :debug
+      Logger.configure(level: :error)
+      assert :logger.get_primary_config().level == :error
+    after
+      Logger.configure(level: :debug)
+    end
+
+    test "supports module level" do
+      :logger.set_module_level(__MODULE__, :none)
+      assert capture_log(fn -> Logger.info("hello") end) == ""
+      :logger.set_module_level(__MODULE__, :all)
+      assert capture_log(fn -> Logger.info("hello") end) =~ "hello"
+    after
+      :logger.unset_module_level(__MODULE__)
+    end
+
+    test "maps Erlang levels" do
+      :logger.set_primary_config(:level, :notice)
+      assert capture_log(fn -> Logger.info("hello") end) =~ "hello"
+
+      :logger.set_primary_config(:level, :notice)
+      assert Logger.level() == :notice
+
+      :logger.set_primary_config(:level, :emergency)
+      assert Logger.level() == :emergency
+    after
+      Logger.configure(level: :debug)
+    end
+
+    test "metadata is synchronised" do
+      Logger.metadata(foo: "bar")
+
+      assert Map.new(Logger.metadata()) == :logger.get_process_metadata()
+      :logger.set_process_metadata(%{bar: "foo"})
+
+      assert Map.new(Logger.metadata()) == :logger.get_process_metadata()
     end
   end
 end

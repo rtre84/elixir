@@ -70,7 +70,7 @@ defmodule ExUnit do
 
   """
   @type state ::
-          nil | {:failed, failed} | {:skipped, binary} | {:excluded, binary} | {:invalid, module}
+          nil | {:excluded, binary} | {:failed, failed} | {:invalid, module} | {:skipped, binary}
 
   @typedoc "The error state returned by `ExUnit.Test` and `ExUnit.TestModule`"
   @type failed :: [{Exception.kind(), reason :: term, Exception.stacktrace()}]
@@ -82,6 +82,8 @@ defmodule ExUnit do
           skipped: non_neg_integer,
           total: non_neg_integer
         }
+
+  @type test_id :: {module, name :: atom}
 
   defmodule Test do
     @moduledoc """
@@ -113,22 +115,31 @@ defmodule ExUnit do
 
   defmodule TestModule do
     @moduledoc """
-    A struct that keeps information about the test case.
+    A struct that keeps information about the test module.
 
     It is received by formatters and contains the following fields:
 
-      * `:name`  - the test case name
+      * `:file`  - (since v1.11.0) the file of the test module
+
+      * `:name`  - the test module name
+
       * `:state` - the test error state (see `t:ExUnit.state/0`)
-      * `:tests` - all tests for this case
+
+      * `:tests` - all tests in this module
 
     """
-    defstruct [:name, :state, tests: []]
+    defstruct [:file, :name, :state, tests: []]
 
-    @type t :: %__MODULE__{name: module, state: ExUnit.state(), tests: [ExUnit.Test.t()]}
+    @type t :: %__MODULE__{
+            file: binary(),
+            name: module,
+            state: ExUnit.state(),
+            tests: [ExUnit.Test.t()]
+          }
   end
 
   defmodule TestCase do
-    # TODO: Remove this module on v2.0 (it has been replacede by TestModule)
+    # TODO: Remove this module on v2.0 (it has been replaced by TestModule)
     @moduledoc false
     defstruct [:name, :state, tests: []]
 
@@ -222,8 +233,14 @@ defmodule ExUnit do
       and print them on test failure. Can be overridden for individual tests via
       `@tag capture_log: false`. Defaults to `false`;
 
-    * `:colors` - a keyword list of colors to be used by some formatters.
-      The only option so far is `[enabled: boolean]` which defaults to `IO.ANSI.enabled?/0`;
+    * `:colors` - a keyword list of color options to be used by some formatters:
+      * `:enabled` - boolean option to enable colors, defaults to `IO.ANSI.enabled?/0`;
+      * `:diff_insert` - color of the insertions on diffs, defaults to `:green`;
+      * `:diff_insert_whitespace` - color of the whitespace insertions on diffs,
+        defaults to `IO.ANSI.color_background(2, 0, 0)`;
+      * `:diff_delete` - color of the deletions on diffs, defaults to `:red`;
+      * `:diff_delete_whitespace` - color of the whitespace deletions on diffs,
+        defaults to `IO.ANSI.color_background(0, 2, 0)`;
 
     * `:exclude` - specifies which tests are run by skipping tests that match the
       filter;
@@ -247,9 +264,6 @@ defmodule ExUnit do
     * `:max_failures` - the suite stops evaluating tests when this number of test failures
       is reached. All tests within a module that fail when using the `setup_all/1,2` callbacks
       are counted as failures. Defaults to `:infinity`;
-
-    * `:module_load_timeout` - the timeout to be used when loading a test module in milliseconds,
-      defaults to `60_000`;
 
     * `:only_test_ids` - a list of `{module_name, test_name}` tuples that limits
       what tests get run;
@@ -355,6 +369,32 @@ defmodule ExUnit do
   def after_suite(function) when is_function(function) do
     current_callbacks = Application.fetch_env!(:ex_unit, :after_suite)
     configure(after_suite: [function | current_callbacks])
+  end
+
+  @doc """
+  Fetches the test supervisor for the current test.
+
+  Returns `{:ok, supervisor_pid}` or `:error` if not called from the test process.
+
+  This is the same supervisor as used by `ExUnit.Callbacks.start_supervised/2`
+  and similar, see `ExUnit.Callbacks` module documentation for more information.
+  """
+  @doc since: "1.11.0"
+  @spec fetch_test_supervisor() :: {:ok, pid()} | :error
+  def fetch_test_supervisor() do
+    case ExUnit.OnExitHandler.get_supervisor(self()) do
+      {:ok, nil} ->
+        opts = [strategy: :one_for_one, max_restarts: 1_000_000, max_seconds: 1]
+        {:ok, sup} = Supervisor.start_link([], opts)
+        ExUnit.OnExitHandler.put_supervisor(self(), sup)
+        {:ok, sup}
+
+      {:ok, _} = ok ->
+        ok
+
+      :error ->
+        :error
+    end
   end
 
   # Persists default values in application

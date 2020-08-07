@@ -4,10 +4,8 @@ defmodule Mix.Tasks.Profile.CprofTest do
   use MixTest.Case
 
   import ExUnit.CaptureIO
-
   alias Mix.Tasks.Profile.Cprof
 
-  @moduletag apps: [:sample]
   @expr "Enum.each(1..5, &String.Chars.Integer.to_string/1)"
 
   test "profiles evaluated expression", context do
@@ -101,7 +99,7 @@ defmodule Mix.Tasks.Profile.CprofTest do
              end) =~ "Warmup..."
 
       refute capture_io(fn ->
-               Cprof.run(["-e", "Enum.each(1..5, fn(_) -> MapSet.new end)", "--no-warmup"])
+               Cprof.run(["-e", "Enum.each(1..5, fn(_) -> MapSet.new() end)", "--no-warmup"])
              end) =~ "Warmup..."
     end)
   end

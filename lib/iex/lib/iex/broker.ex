@@ -1,6 +1,6 @@
 defmodule IEx.Broker do
   @moduledoc false
-  @name IEx.Broker
+  @name __MODULE__
 
   @type take_ref :: {takeover_ref :: reference(), server_ref :: reference()}
 
@@ -13,17 +13,12 @@ defmodule IEx.Broker do
   """
   @spec shell :: pid | nil
   def shell() do
-    # Locate top group leader, always registered as user
-    # can be implemented by group (normally) or user
-    # (if oldshell or noshell)
+    # Locate top group leader when using the "new shell".
     if user = Process.whereis(:user) do
       case :group.interfaces(user) do
         # Old or no shell
         [] ->
-          case :user.interfaces(user) do
-            [] -> nil
-            [shell: shell] -> shell
-          end
+          nil
 
         # Get current group from user_drv
         [user_drv: user_drv] ->
@@ -49,7 +44,7 @@ defmodule IEx.Broker do
   ## Broker API
 
   def start_link(_) do
-    GenServer.start_link(__MODULE__, :ok, name: @name)
+    GenServer.start_link(@name, :ok, name: @name)
   end
 
   @doc """
@@ -79,15 +74,15 @@ defmodule IEx.Broker do
   @doc """
   Client requests a takeover.
   """
-  @spec take_over(binary, keyword) ::
+  @spec take_over(binary, iodata, keyword) ::
           {:ok, server :: pid, group_leader :: pid} | {:error, :no_iex | :refused}
-  def take_over(identifier, opts) do
+  def take_over(location, whereami, opts) do
     case GenServer.whereis(@name) do
       nil ->
         {:error, :no_iex}
 
       _pid ->
-        GenServer.call(@name, {:take_over, identifier, opts}, :infinity)
+        GenServer.call(@name, {:take_over, location, whereami, opts}, :infinity)
     end
   end
 
@@ -104,7 +99,7 @@ defmodule IEx.Broker do
   end
 
   @impl true
-  def handle_call({:take_over, identifier, opts}, {_, ref} = from, state) do
+  def handle_call({:take_over, location, whereami, opts}, {_, ref} = from, state) do
     case servers(state) do
       [] ->
         {:reply, {:error, :no_iex}, state}
@@ -112,7 +107,7 @@ defmodule IEx.Broker do
       servers ->
         server_refs =
           for {server_ref, server_pid} <- servers do
-            send(server_pid, {:take_over, self(), {ref, server_ref}, identifier, opts})
+            send(server_pid, {:take_over, self(), {ref, server_ref}, location, whereami, opts})
             server_ref
           end
 

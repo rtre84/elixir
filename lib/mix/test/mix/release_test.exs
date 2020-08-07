@@ -50,6 +50,21 @@ defmodule Mix.ReleaseTest do
       assert release.options[:quiet]
     end
 
+    test "allows specifying the version from an application" do
+      overrides = [version: {:from_app, :elixir}]
+      release = from_config!(nil, config(), overrides)
+
+      assert release.version == to_string(Application.spec(:elixir, :vsn))
+    end
+
+    test "raises when :from_app is used with an app that doesn't exist" do
+      overrides = [version: {:from_app, :not_valid}]
+
+      assert_raise Mix.Error,
+                   ~r"Could not find version for :not_valid, please make sure the application exists",
+                   fn -> from_config!(nil, config(), overrides) end
+    end
+
     test "includes applications" do
       release = from_config!(nil, config(), [])
       assert release.applications.mix[:path] == to_charlist(Application.app_dir(:mix))
@@ -57,6 +72,12 @@ defmodule Mix.ReleaseTest do
 
       assert release.applications.kernel[:path] == to_charlist(Application.app_dir(:kernel))
       assert release.applications.kernel[:otp_app?]
+    end
+
+    test "allows release to be given as an anonymous function" do
+      release = from_config!(:foo, config(releases: [foo: fn -> [version: "0.2.0"] end]), [])
+      assert release.name == :foo
+      assert release.version == "0.2.0"
     end
 
     test "uses chosen release via the CLI" do
@@ -80,7 +101,7 @@ defmodule Mix.ReleaseTest do
     test "uses chosen release via the default_release" do
       release =
         from_config!(
-          :bar,
+          nil,
           config(
             default_release: :bar,
             releases: [foo: [version: "0.2.0"], bar: [version: "0.3.0"]]
@@ -110,6 +131,75 @@ defmodule Mix.ReleaseTest do
       end
     end
 
+    test "uses the locked version of an app", context do
+      in_tmp(context.test, fn ->
+        # install newer version of the app in the custom erts
+        custom_erts_path = Path.join([File.cwd!(), "erts-#{@erts_version}"])
+        File.cp_r!(@erts_source, custom_erts_path)
+
+        ebin_dir = Path.expand(Path.join([custom_erts_path, "..", "lib", "cowboy-2.0.0", "ebin"]))
+        File.mkdir_p!(ebin_dir)
+        app_resource = "{application,cowboy,[{vsn,\"2.0.0\"},{modules,[]},{applications,[]}]}."
+        File.write!(Path.join(ebin_dir, "cowboy.app"), app_resource)
+
+        # install older version of the app in the project dependencies
+        project_path = Path.join(File.cwd!(), "project")
+        build_path = Path.join(project_path, "_build")
+        ebin_dir = Path.join([build_path, "dev", "lib", "cowboy", "ebin"])
+        File.mkdir_p!(ebin_dir)
+        app_resource = "{application,cowboy,[{vsn,\"1.1.2\"},{modules,[]},{applications,[]}]}."
+        File.write!(Path.join(ebin_dir, "cowboy.app"), app_resource)
+
+        File.mkdir_p!(Path.join([project_path, "deps", "cowboy"]))
+        lockfile = Path.join(project_path, "mix.lock")
+
+        File.write!(lockfile, ~S"""
+        %{
+          "cowboy": {:hex, :cowboy, "1.1.2"},
+        }
+        """)
+
+        app_config =
+          config(
+            deps: [{:cowboy, "~> 1.0", path: "deps/cowvoy"}],
+            releases: [demo: [include_erts: custom_erts_path, applications: [cowboy: :permanent]]]
+          )
+
+        Mix.Project.in_project(:mix, project_path, app_config, fn _ ->
+          Code.prepend_path(ebin_dir)
+          release = from_config!(nil, app_config, [])
+          assert release.applications.cowboy[:vsn] == '1.1.2'
+        end)
+      end)
+    end
+
+    test "uses the latest version of an app if it is not locked", context do
+      in_tmp(context.test, fn ->
+        test_erts_dir = Path.join(File.cwd!(), "erts-#{@erts_version}")
+        test_libs_dir = Path.join(File.cwd!(), "lib")
+        libs_dir = Path.join(:code.root_dir(), "lib")
+        libs = File.ls!(libs_dir)
+
+        File.cp_r!(@erts_source, test_erts_dir)
+
+        for lib <- libs,
+            source_file <- Path.wildcard(Path.join([libs_dir, lib, "ebin", "*.app"])) do
+          target_dir = Path.join([test_libs_dir, lib, "ebin"])
+          target_file = Path.join(target_dir, Path.basename(source_file))
+
+          File.mkdir_p!(target_dir)
+          File.cp!(source_file, target_file)
+        end
+
+        File.mkdir_p!(Path.join("lib", "compiler-1.0"))
+
+        release = from_config!(nil, config(releases: [demo: [include_erts: test_erts_dir]]), [])
+
+        assert Path.dirname(release.applications.compiler[:path]) == test_libs_dir
+        assert release.applications.compiler[:vsn] != "1.0"
+      end)
+    end
+
     test "raises on unknown app" do
       assert_raise Mix.Error, "Could not find application :unknown", fn ->
         from_config!(nil, config(releases: [demo: [applications: [unknown: :none]]]), [])
@@ -119,6 +209,12 @@ defmodule Mix.ReleaseTest do
     test "raises for missing version" do
       assert_raise Mix.Error, ~r"No :version found", fn ->
         from_config!(nil, config() |> Keyword.drop([:version]), [])
+      end
+    end
+
+    test "raises for blank version" do
+      assert_raise Mix.Error, ~r"The release :version cannot be an empty string", fn ->
+        from_config!(nil, config(version: ""), [])
       end
     end
 
@@ -140,6 +236,14 @@ defmodule Mix.ReleaseTest do
       assert_raise Mix.Error,
                    ~r"The :steps option must contain the atom :assemble once",
                    fn -> release(steps: [:assemble, :assemble]) end
+
+      assert_raise Mix.Error,
+                   ~r"The :tar step must come after :assemble",
+                   fn -> release(steps: [:tar, :assemble]) end
+
+      assert_raise Mix.Error,
+                   ~r"The :steps option can only contain the atom :tar once",
+                   fn -> release(steps: [:assemble, :tar, :tar]) end
 
       assert_raise Mix.Error,
                    ~r"The :steps option must be",
@@ -166,8 +270,8 @@ defmodule Mix.ReleaseTest do
       assert %Mix.Release{
                name: :foo,
                version: "0.1.0",
-               path: path,
-               version_path: version_path
+               path: _path,
+               version_path: _version_path
              } = from_config!(nil, config, [])
     end
   end
@@ -425,12 +529,24 @@ defmodule Mix.ReleaseTest do
       assert contents =~ "[{foo,[{bar,baz}]}]."
     end
 
+    test "writes sys_config with encoding" do
+      assert make_sys_config(
+               release([]),
+               [encoding: {:time_μs, :"£", "£", '£'}],
+               "unused/runtime/path"
+             ) ==
+               :ok
+
+      {:ok, contents} = :file.consult(@sys_config)
+      assert contents == [[encoding: {:time_μs, :"£", "£", '£'}]]
+    end
+
     test "writes the given sys_config with config providers" do
       release = release(config_providers: @providers)
       assert make_sys_config(release, [kernel: [key: :value]], "/foo/bar/bat") == :ok
       assert File.read!(@sys_config) =~ "%% RUNTIME_CONFIG=true"
       {:ok, [config]} = :file.consult(@sys_config)
-      assert %Config.Provider{} = provider = config[:elixir][:config_providers]
+      assert %Config.Provider{} = provider = config[:elixir][:config_provider_init]
       refute provider.prune_after_boot
       assert provider.extra_config == [kernel: [start_distribution: true]]
       assert config[:kernel] == [key: :value, start_distribution: false]
@@ -447,8 +563,20 @@ defmodule Mix.ReleaseTest do
       assert make_sys_config(release, [kernel: [key: :value]], "/foo/bar/bat") == :ok
       assert File.read!(@sys_config) =~ "%% RUNTIME_CONFIG=true"
       {:ok, [config]} = :file.consult(@sys_config)
-      assert %Config.Provider{} = provider = config[:elixir][:config_providers]
+      assert %Config.Provider{} = provider = config[:elixir][:config_provider_init]
+      assert provider.reboot_after_config
       assert provider.prune_after_boot
+      assert provider.extra_config == []
+      assert config[:kernel] == [key: :value]
+    end
+
+    test "writes the given sys_config without reboot" do
+      release = release(config_providers: @providers, reboot_system_after_config: false)
+      assert make_sys_config(release, [kernel: [key: :value]], "/foo/bar/bat") == :ok
+      assert File.read!(@sys_config) =~ "%% RUNTIME_CONFIG=false"
+      {:ok, [config]} = :file.consult(@sys_config)
+      assert %Config.Provider{} = provider = config[:elixir][:config_provider_init]
+      refute provider.reboot_after_config
       assert provider.extra_config == []
       assert config[:kernel] == [key: :value]
     end
@@ -468,7 +596,20 @@ defmodule Mix.ReleaseTest do
       assert File.read!(Path.join(destination, "bin/erl")) =~
                ~s|ROOTDIR="$(dirname "$(dirname "$BINDIR")")"|
 
+      unless match?({:win32, _}, :os.type()) do
+        assert File.lstat!(Path.join(destination, "bin/erl")).mode |> rem(0o1000) == 0o755
+      end
+
       refute File.exists?(Path.join(destination, "bin/erl.ini"))
+      refute File.exists?(Path.join(destination, "doc"))
+
+      # Now we copy from the copy using a string and without src
+      new_destination = tmp_path("mix_release/_build/dev/rel/new_demo/erts-#{@erts_version}")
+      File.rm_rf!(Path.join(destination, "src"))
+
+      release = from_config!(nil, config(releases: [new_demo: [include_erts: destination]]), [])
+      assert copy_erts(release)
+      assert File.exists?(new_destination)
     end
 
     test "does not copy when include_erts is false" do
@@ -537,7 +678,7 @@ defmodule Mix.ReleaseTest do
       assert File.exists?(Path.join(@release_lib, "runtime_tools-#{@runtime_tools_version}/priv"))
     end
 
-    test "does not copy OTP app if include_erts is  false" do
+    test "does not copy OTP app if include_erts is false" do
       release = release(include_erts: false, applications: [runtime_tools: :permanent])
       refute copy_app(release, :runtime_tools)
       refute File.exists?(Path.join(@release_lib, "runtime_tools-#{@runtime_tools_version}/ebin"))
@@ -554,6 +695,64 @@ defmodule Mix.ReleaseTest do
 
       assert {:error, :beam_lib, {:missing_chunk, _, 'Dbgi'}} = :beam_lib.chunks(beam, ['Dbgi'])
       assert {:error, :beam_lib, {:missing_chunk, _, 'Docs'}} = :beam_lib.chunks(beam, ['Docs'])
+    end
+
+    test "can keep docs and debug info, if requested" do
+      {:ok, beam} =
+        Path.join(@eex_ebin, "Elixir.EEx.beam")
+        |> File.read!()
+        |> strip_beam(keep: ["Docs", "Dbgi"])
+
+      assert {:ok, {EEx, [{'Dbgi', _}]}} = :beam_lib.chunks(beam, ['Dbgi'])
+      assert {:ok, {EEx, [{'Docs', _}]}} = :beam_lib.chunks(beam, ['Docs'])
+    end
+  end
+
+  describe "included applications" do
+    test "are included in the release", context do
+      in_tmp(context.test, fn ->
+        app =
+          {:application, :my_sample1,
+           applications: [:kernel, :stdlib, :elixir],
+           description: 'my_sample1',
+           modules: [],
+           vsn: '1.0.0',
+           included_applications: [:runtime_tools]}
+
+        File.mkdir_p!("my_sample1/ebin")
+        Code.prepend_path("my_sample1/ebin")
+        format = :io_lib.format("%% coding: utf-8~n~p.~n", [app])
+        File.write!("my_sample1/ebin/my_sample1.app", format)
+
+        release = release(applications: [my_sample1: :permanent])
+        assert release.applications.runtime_tools[:included]
+        assert release.boot_scripts.start[:runtime_tools] == :load
+
+        release = release(applications: [my_sample1: :permanent, runtime_tools: :none])
+        assert release.applications.runtime_tools[:included]
+        assert release.boot_scripts.start[:runtime_tools] == :none
+      end)
+    end
+
+    test "raise on conflict", context do
+      in_tmp(context.test, fn ->
+        app =
+          {:application, :my_sample2,
+           applications: [:kernel, :stdlib, :elixir, :runtime_tools],
+           description: 'my_sample',
+           modules: [],
+           vsn: '1.0.0',
+           included_applications: [:runtime_tools]}
+
+        File.mkdir_p!("my_sample2/ebin")
+        Code.prepend_path("my_sample2/ebin")
+        format = :io_lib.format("%% coding: utf-8~n~p.~n", [app])
+        File.write!("my_sample2/ebin/my_sample2.app", format)
+
+        assert_raise Mix.Error,
+                     ":runtime_tools is listed both as a regular application and as an included application",
+                     fn -> release(applications: [my_sample2: :permanent]) end
+      end)
     end
   end
 
@@ -574,5 +773,18 @@ defmodule Mix.ReleaseTest do
       config_path: tmp_path("mix_release/config/config.exs")
     ]
     |> Keyword.merge(extra)
+  end
+
+  defmodule ReleaseApp do
+    def project do
+      [
+        app: :mix,
+        version: "0.1.0",
+        build_path: tmp_path("mix_release/_build"),
+        build_per_environment: true,
+        config_path: tmp_path("mix_release/config/config.exs")
+      ]
+      |> Keyword.merge(Process.get(:project))
+    end
   end
 end

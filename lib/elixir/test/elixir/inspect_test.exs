@@ -54,6 +54,8 @@ defmodule Inspect.AtomTest do
     assert inspect(:~>>) == ":~>>"
     assert inspect(:<~>) == ":<~>"
     assert inspect(:<|>) == ":<|>"
+    assert inspect(:+++) == ":+++"
+    assert inspect(:---) == ":---"
   end
 
   test "::" do
@@ -90,7 +92,7 @@ defmodule Inspect.AtomTest do
     assert inspect(:hello, opts) == ":hello"
   end
 
-  test "unicode" do
+  test "Unicode" do
     assert inspect(:olá) == ":olá"
     assert inspect(:Olá) == ":Olá"
     assert inspect(:Ólá) == ":Ólá"
@@ -678,5 +680,31 @@ defmodule Inspect.OthersTest do
     uri = URI.parse("https://elixir-lang.org")
     assert inspect(uri, opts) == "#URI<https://elixir-lang.org>"
     assert inspect([uri], opts) == "[#URI<https://elixir-lang.org>]"
+  end
+
+  defmodule Nested do
+    defstruct nested: nil
+
+    defimpl Inspect do
+      import Inspect.Algebra
+
+      def inspect(%Nested{nested: nested}, opts) do
+        indent = Keyword.get(opts.custom_options, :indent, 2)
+        level = Keyword.get(opts.custom_options, :level, 1)
+
+        nested_str =
+          Kernel.inspect(nested, custom_options: [level: level + 1, indent: indent + 2])
+
+        concat(
+          nest(line("#Nested[##{level}/#{indent}]<", nested_str), indent),
+          nest(line("", ">"), indent - 2)
+        )
+      end
+    end
+  end
+
+  test "custom_options" do
+    assert inspect(%Nested{nested: %Nested{nested: 42}}) ==
+             "#Nested[#1/2]<\n  #Nested[#2/4]<\n    42\n  >\n>"
   end
 end

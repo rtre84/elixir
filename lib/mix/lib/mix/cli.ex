@@ -29,7 +29,7 @@ defmodule Mix.CLI do
     load_mix_exs()
     {task, args} = get_task(args)
     ensure_hex(task)
-    change_env(task)
+    maybe_change_env_and_target(task)
     run_task(task, args)
   end
 
@@ -37,7 +37,10 @@ defmodule Mix.CLI do
     file = System.get_env("MIX_EXS") || "mix.exs"
 
     if File.regular?(file) do
+      old_undefined = Code.get_compiler_option(:no_warn_undefined)
+      Code.put_compiler_option(:no_warn_undefined, :all)
       Code.compile_file(file)
+      Code.put_compiler_option(:no_warn_undefined, old_undefined)
     end
   end
 
@@ -75,13 +78,13 @@ defmodule Mix.CLI do
   defp run_task(name, args) do
     try do
       ensure_no_slashes(name)
-      Mix.Task.run("loadconfig")
+      Mix.Tasks.Loadconfig.load_default()
       Mix.Task.run(name, args)
     rescue
       # We only rescue exceptions in the Mix namespace, all
       # others pass through and will explode on the users face
       exception ->
-        if Map.get(exception, :mix) && not Mix.debug?() do
+        if Map.get(exception, :mix, false) and not Mix.debug?() do
           mod = exception.__struct__ |> Module.split() |> Enum.at(0, "Mix")
           Mix.shell().error("** (#{mod}) #{Exception.message(exception)}")
           exit({:shutdown, 1})
@@ -104,31 +107,44 @@ defmodule Mix.CLI do
     end
   end
 
-  defp change_env(task) do
-    if env = preferred_cli_env(task) do
-      Mix.env(env)
+  defp maybe_change_env_and_target(task) do
+    task = String.to_atom(task)
+    config = Mix.Project.config()
 
-      if project = Mix.Project.pop() do
-        %{name: name, file: file} = project
-        Mix.Project.push(name, file)
-      end
+    env = preferred_cli_env(task, config)
+    target = preferred_cli_target(task, config)
+    env && Mix.env(env)
+    target && Mix.target(target)
+
+    if env || target do
+      reload_project()
     end
   end
 
-  defp preferred_cli_env(task) do
+  defp reload_project() do
+    if project = Mix.Project.pop() do
+      %{name: name, file: file} = project
+      Mix.Project.push(name, file)
+    end
+  end
+
+  defp preferred_cli_env(task, config) do
     if System.get_env("MIX_ENV") do
       nil
     else
-      task = String.to_atom(task)
-      Mix.Project.config()[:preferred_cli_env][task] || Mix.Task.preferred_cli_env(task)
+      config[:preferred_cli_env][task] || Mix.Task.preferred_cli_env(task)
     end
+  end
+
+  defp preferred_cli_target(task, config) do
+    config[:preferred_cli_target][task]
   end
 
   defp load_dot_config do
     path = Path.join(Mix.Utils.mix_config(), "config.exs")
 
     if File.regular?(path) do
-      Mix.Task.run("loadconfig", [path])
+      Mix.Tasks.Loadconfig.load_imports(path)
     end
   end
 

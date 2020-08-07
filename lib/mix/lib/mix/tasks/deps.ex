@@ -115,7 +115,7 @@ defmodule Mix.Tasks.Deps do
     * `:tag` - the Git tag to checkout
     * `:submodules` - when `true`, initialize submodules for the repo
     * `:sparse` - checkout a single directory inside the Git repository and use it
-      as your Mix dependency. Search "sparse git checkouts" for more information.
+      as your Mix dependency. Search "sparse Git checkouts" for more information.
 
   If your Git repository requires authentication, such as basic username:password
   HTTP authentication via URLs, it can be achieved via Git configuration, keeping
@@ -158,7 +158,9 @@ defmodule Mix.Tasks.Deps do
 
     shell = Mix.shell()
 
-    Enum.each(load_on_environment(loaded_opts), fn dep ->
+    load_on_environment(loaded_opts)
+    |> Enum.sort_by(& &1.app)
+    |> Enum.each(fn dep ->
       %Mix.Dep{scm: scm, manager: manager} = dep
       dep = check_lock(dep)
       extra = if manager, do: " (#{manager})", else: ""

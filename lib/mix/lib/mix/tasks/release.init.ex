@@ -42,12 +42,9 @@ defmodule Mix.Tasks.Release.Init do
   def vm_args_text,
     do: ~S"""
     ## Customize flags given to the VM: http://erlang.org/doc/man/erl.html
-    ## -name/-sname/-setcookie are configured via env vars, do not set them here
+    ## -mode/-name/-sname/-setcookie are configured via env vars, do not set them here
 
-    ## Preloads all modules instead of loading them dynamically
-    -mode embedded
-
-    ## Number of dirty schedulers doing IO work (file, sockets, etc)
+    ## Number of dirty schedulers doing IO work (file, sockets, and others)
     ##+SDio 5
 
     ## Increase number of concurrent ports/sockets
@@ -63,13 +60,19 @@ defmodule Mix.Tasks.Release.Init do
     #!/bin/sh
 
     # Sets and enables heart (recommended only in daemon mode)
-    # if [ "$RELEASE_COMMAND" = "daemon" ] || [ "$RELEASE_COMMAND" = "daemon_iex" ]; then
-    #   HEART_COMMAND="$RELEASE_ROOT/bin/$RELEASE_NAME $RELEASE_COMMAND"
-    #   export HEART_COMMAND
-    #   export ELIXIR_ERL_OPTIONS="-heart"
-    # fi
+    # case $RELEASE_COMMAND in
+    #   daemon*)
+    #     HEART_COMMAND="$RELEASE_ROOT/bin/$RELEASE_NAME $RELEASE_COMMAND"
+    #     export HEART_COMMAND
+    #     export ELIXIR_ERL_OPTIONS="-heart"
+    #     ;;
+    #   *)
+    #     ;;
+    # esac
 
-    # Set the release to work across nodes
+    # Set the release to work across nodes. If using the long name format like
+    # the one below (my_app@127.0.0.1), you need to also uncomment the
+    # RELEASE_DISTRIBUTION variable below. Must be "sname", "name" or "none".
     # export RELEASE_DISTRIBUTION=name
     # export RELEASE_NODE=<%= @release.name %>@127.0.0.1
     """
@@ -87,25 +90,44 @@ defmodule Mix.Tasks.Release.Init do
     export RELEASE_NAME="${RELEASE_NAME:-"<%= @release.name %>"}"
     export RELEASE_VSN="${RELEASE_VSN:-"$(cut -d' ' -f2 "$RELEASE_ROOT/releases/start_erl.data")"}"
     export RELEASE_COMMAND="$1"
+    export RELEASE_MODE="${RELEASE_MODE:-"embedded"}"
 
     REL_VSN_DIR="$RELEASE_ROOT/releases/$RELEASE_VSN"
     . "$REL_VSN_DIR/env.sh"
 
-    export RELEASE_COOKIE=${RELEASE_COOKIE:-"$(cat "$RELEASE_ROOT/releases/COOKIE")"}
-    export RELEASE_NODE=${RELEASE_NODE:-"$RELEASE_NAME"}
-    export RELEASE_TMP=${RELEASE_TMP:-"$RELEASE_ROOT/tmp"}
-    export RELEASE_VM_ARGS=${RELEASE_VM_ARGS:-"$REL_VSN_DIR/vm.args"}
-    export RELEASE_DISTRIBUTION=${RELEASE_DISTRIBUTION:-"sname"}
+    export RELEASE_COOKIE="${RELEASE_COOKIE:-"$(cat "$RELEASE_ROOT/releases/COOKIE")"}"
+    export RELEASE_NODE="${RELEASE_NODE:-"$RELEASE_NAME"}"
+    export RELEASE_TMP="${RELEASE_TMP:-"$RELEASE_ROOT/tmp"}"
+    export RELEASE_VM_ARGS="${RELEASE_VM_ARGS:-"$REL_VSN_DIR/vm.args"}"
+    export RELEASE_DISTRIBUTION="${RELEASE_DISTRIBUTION:-"sname"}"
+    export RELEASE_BOOT_SCRIPT="${RELEASE_BOOT_SCRIPT:-"start"}"
+    export RELEASE_BOOT_SCRIPT_CLEAN="${RELEASE_BOOT_SCRIPT_CLEAN:-"start_clean"}"
 
     rand () {
       od -t xS -N 2 -A n /dev/urandom | tr -d " \n"
     }
 
+    release_distribution () {
+      case $RELEASE_DISTRIBUTION in
+        none)
+          ;;
+
+        name | sname)
+          echo "--$RELEASE_DISTRIBUTION $1"
+          ;;
+
+        *)
+          echo "ERROR: Expected sname, name, or none in RELEASE_DISTRIBUTION, got: $RELEASE_DISTRIBUTION" >&2
+          exit 1
+          ;;
+      esac
+    }
+
     rpc () {
       exec "$REL_VSN_DIR/elixir" \
            --hidden --cookie "$RELEASE_COOKIE" \
-           --$RELEASE_DISTRIBUTION "rpc-$(rand)-$RELEASE_NODE" \
-           --boot "$REL_VSN_DIR/start_clean" \
+           $(release_distribution "rpc-$(rand)-$RELEASE_NODE") \
+           --boot "$REL_VSN_DIR/$RELEASE_BOOT_SCRIPT_CLEAN" \
            --boot-var RELEASE_LIB "$RELEASE_ROOT/lib" \
            --rpc-eval "$RELEASE_NODE" "$1"
     }
@@ -116,23 +138,26 @@ defmodule Mix.Tasks.Release.Init do
       shift
       exec "$REL_VSN_DIR/$REL_EXEC" \
            --cookie "$RELEASE_COOKIE" \
-           --$RELEASE_DISTRIBUTION "$RELEASE_NODE" \
+           $(release_distribution "$RELEASE_NODE") \
+           --erl "<%= release_mode(@release, "$RELEASE_MODE") %>" \
            --erl-config "$RELEASE_SYS_CONFIG" \
-           --boot "$REL_VSN_DIR/start" \
+           --boot "$REL_VSN_DIR/$RELEASE_BOOT_SCRIPT" \
            --boot-var RELEASE_LIB "$RELEASE_ROOT/lib" \
            --vm-args "$RELEASE_VM_ARGS" "$@"
     }
 
     export_release_sys_config () {
-      if grep -q "RUNTIME_CONFIG=true" "$REL_VSN_DIR/sys.config"; then
+      DEFAULT_SYS_CONFIG="${RELEASE_SYS_CONFIG:-"$REL_VSN_DIR/sys"}"
+
+      if grep -q "RUNTIME_CONFIG=true" "$DEFAULT_SYS_CONFIG.config"; then
         RELEASE_SYS_CONFIG="$RELEASE_TMP/$RELEASE_NAME-$RELEASE_VSN-$(date +%Y%m%d%H%M%S)-$(rand).runtime"
 
-        (mkdir -p "$RELEASE_TMP" && cp "$REL_VSN_DIR/sys.config" "$RELEASE_SYS_CONFIG.config") || (
+        (mkdir -p "$RELEASE_TMP" && cat "$DEFAULT_SYS_CONFIG.config" >"$RELEASE_SYS_CONFIG.config") || (
           echo "ERROR: Cannot start release because it could not write $RELEASE_SYS_CONFIG.config" >&2
           exit 1
         )
       else
-        RELEASE_SYS_CONFIG="$REL_VSN_DIR/sys"
+        RELEASE_SYS_CONFIG="$DEFAULT_SYS_CONFIG"
       fi
 
       export RELEASE_SYS_CONFIG
@@ -165,7 +190,7 @@ defmodule Mix.Tasks.Release.Init do
         exec "$REL_VSN_DIR/elixir" \
            --cookie "$RELEASE_COOKIE" \
            --erl-config "$RELEASE_SYS_CONFIG" \
-           --boot "$REL_VSN_DIR/start_clean" \
+           --boot "$REL_VSN_DIR/$RELEASE_BOOT_SCRIPT_CLEAN" \
            --boot-var RELEASE_LIB "$RELEASE_ROOT/lib" \
            --vm-args "$RELEASE_VM_ARGS" --eval "$2"
         ;;
@@ -173,8 +198,8 @@ defmodule Mix.Tasks.Release.Init do
       remote)
         exec "$REL_VSN_DIR/iex" \
              --werl --hidden --cookie "$RELEASE_COOKIE" \
-             --$RELEASE_DISTRIBUTION "rem-$(rand)-$RELEASE_NODE" \
-             --boot "$REL_VSN_DIR/start_clean" \
+             $(release_distribution "rem-$(rand)-$RELEASE_NODE") \
+             --boot "$REL_VSN_DIR/$RELEASE_BOOT_SCRIPT_CLEAN" \
              --boot-var RELEASE_LIB "$RELEASE_ROOT/lib" \
              --remsh "$RELEASE_NODE"
         ;;
@@ -188,11 +213,11 @@ defmodule Mix.Tasks.Release.Init do
         ;;
 
       restart|stop)
-        rpc "System.$1"
+        rpc "System.$1()"
         ;;
 
       pid)
-        rpc "IO.puts System.pid"
+        rpc "IO.puts System.pid()"
         ;;
 
       version)
@@ -213,7 +238,7 @@ defmodule Mix.Tasks.Release.Init do
         remote         Connects to the running system via a remote shell
         restart        Restarts the running system via a remote command
         stop           Stops the running system via a remote command
-        pid            Prints the OS PID of the running system via a remote command
+        pid            Prints the operating system PID of the running system via a remote command
         version        Prints the release name and version to be booted
     " >&2
 
@@ -229,7 +254,9 @@ defmodule Mix.Tasks.Release.Init do
   def env_bat_text,
     do: ~S"""
     @echo off
-    rem Set the release to work across nodes
+    rem Set the release to work across nodes. If using the long name format like
+    rem the one below (my_app@127.0.0.1), you need to also uncomment the
+    rem RELEASE_DISTRIBUTION variable below. Must be "sname", "name" or "none".
     rem set RELEASE_DISTRIBUTION=name
     rem set RELEASE_NODE=<%= @release.name %>@127.0.0.1
     """
@@ -246,17 +273,20 @@ defmodule Mix.Tasks.Release.Init do
     popd
 
     if not defined RELEASE_NAME (set RELEASE_NAME=<%= @release.name %>)
-    if not defined RELEASE_VSN (for /f "tokens=1,2" %%K in (!RELEASE_ROOT!\releases\start_erl.data) do (set ERTS_VSN=%%K) && (set RELEASE_VSN=%%L))
+    if not defined RELEASE_VSN (for /f "tokens=1,2" %%K in ('type "!RELEASE_ROOT!\releases\start_erl.data"') do (set ERTS_VSN=%%K) && (set RELEASE_VSN=%%L))
+    if not defined RELEASE_MODE (set RELEASE_MODE=embedded)
     set RELEASE_COMMAND=%~1
     set REL_VSN_DIR=!RELEASE_ROOT!\releases\!RELEASE_VSN!
-    call !REL_VSN_DIR!\env.bat
+    call "!REL_VSN_DIR!\env.bat"
 
     if not defined RELEASE_COOKIE (set /p RELEASE_COOKIE=<!RELEASE_ROOT!\releases\COOKIE)
     if not defined RELEASE_NODE (set RELEASE_NODE=!RELEASE_NAME!)
     if not defined RELEASE_TMP (set RELEASE_TMP=!RELEASE_ROOT!\tmp)
     if not defined RELEASE_VM_ARGS (set RELEASE_VM_ARGS=!REL_VSN_DIR!\vm.args)
     if not defined RELEASE_DISTRIBUTION (set RELEASE_DISTRIBUTION=sname)
-    set RELEASE_SYS_CONFIG=!REL_VSN_DIR!\sys
+    if not defined RELEASE_BOOT_SCRIPT (set RELEASE_BOOT_SCRIPT=start)
+    if not defined RELEASE_BOOT_SCRIPT_CLEAN (set RELEASE_BOOT_SCRIPT_CLEAN=start_clean)
+    if not defined RELEASE_SYS_CONFIG (set RELEASE_SYS_CONFIG=!REL_VSN_DIR!\sys)
 
     if "%~1" == "start" (set "REL_EXEC=elixir" && set "REL_EXTRA=--no-halt" && set "REL_GOTO=start")
     if "%~1" == "start_iex" (set "REL_EXEC=iex" && set "REL_EXTRA=--werl" && set "REL_GOTO=start")
@@ -270,11 +300,12 @@ defmodule Mix.Tasks.Release.Init do
     )
 
     if not "!REL_GOTO!" == "" (
-      findstr "RUNTIME_CONFIG=true" "!RELEASE_SYS_CONFIG!.config" >nil 2>&1 && (
+      findstr "RUNTIME_CONFIG=true" "!RELEASE_SYS_CONFIG!.config" >nul 2>&1 && (
+        set DEFAULT_SYS_CONFIG=!RELEASE_SYS_CONFIG!
         for /f "skip=1" %%X in ('wmic os get localdatetime') do if not defined TIMESTAMP set TIMESTAMP=%%X
         set RELEASE_SYS_CONFIG=!RELEASE_TMP!\!RELEASE_NAME!-!RELEASE_VSN!-!TIMESTAMP:~0,11!-!RANDOM!.runtime
-        mkdir "!RELEASE_TMP!" >nil
-        copy /y "!REL_VSN_DIR!\sys.config" "!RELEASE_SYS_CONFIG!.config" >nil || (
+        mkdir "!RELEASE_TMP!" >nul 2>&1
+        copy /y "!DEFAULT_SYS_CONFIG!.config" "!RELEASE_SYS_CONFIG!.config" >nul || (
           echo Cannot start release because it could not write to "!RELEASE_SYS_CONFIG!.config"
           goto end
         )
@@ -286,7 +317,7 @@ defmodule Mix.Tasks.Release.Init do
     if "%~1" == "remote" (goto remote)
     if "%~1" == "version" (goto version)
     if "%~1" == "stop" (set "REL_RPC=System.stop()" && goto rpc)
-    if "%~1" == "restart" (set "REL_RPC=System.stop()" && goto rpc)
+    if "%~1" == "restart" (set "REL_RPC=System.restart()" && goto rpc)
     if "%~1" == "pid" (set "REL_RPC=IO.puts(System.pid())" && goto rpc)
     if "%~1" == "rpc" (
       if "%~2" == "" (
@@ -309,18 +340,25 @@ defmodule Mix.Tasks.Release.Init do
     echo    remote       Connects to the running system via a remote shell
     echo    restart      Restarts the running system via a remote command
     echo    stop         Stops the running system via a remote command
-    echo    pid          Prints the OS PID of the running system via a remote command
+    echo    pid          Prints the operating system PID of the running system via a remote command
     echo    version      Prints the release name and version to be booted
     echo.
     if not "%~1" == "" (echo ERROR: Unknown command %~1)
     goto end
 
     :start
+    if "!RELEASE_DISTRIBUTION!" == "none" (
+      set RELEASE_DISTRIBUTION_FLAG=
+    ) else (
+      set RELEASE_DISTRIBUTION_FLAG=--!RELEASE_DISTRIBUTION! "!RELEASE_NODE!"
+    )
+
     "!REL_VSN_DIR!\!REL_EXEC!.bat" !REL_EXTRA! ^
       --cookie "!RELEASE_COOKIE!" ^
-      --!RELEASE_DISTRIBUTION! "!RELEASE_NODE!" ^
+      !RELEASE_DISTRIBUTION_FLAG! ^
+      --erl "<%= release_mode(@release, "!RELEASE_MODE!") %>" ^
       --erl-config "!RELEASE_SYS_CONFIG!" ^
-      --boot "!REL_VSN_DIR!\start" ^
+      --boot "!REL_VSN_DIR!\!RELEASE_BOOT_SCRIPT!" ^
       --boot-var RELEASE_LIB "!RELEASE_ROOT!\lib" ^
       --vm-args "!RELEASE_VM_ARGS!"
     goto end
@@ -330,25 +368,37 @@ defmodule Mix.Tasks.Release.Init do
       --eval "%~2" ^
       --cookie "!RELEASE_COOKIE!" ^
       --erl-config "!RELEASE_SYS_CONFIG!" ^
-      --boot "!REL_VSN_DIR!\start_clean" ^
+      --boot "!REL_VSN_DIR!\!RELEASE_BOOT_SCRIPT_CLEAN!" ^
       --boot-var RELEASE_LIB "!RELEASE_ROOT!\lib" ^
       --vm-args "!RELEASE_VM_ARGS!"
     goto end
 
     :remote
+    if "!RELEASE_DISTRIBUTION!" == "none" (
+      set RELEASE_DISTRIBUTION_FLAG=
+    ) else (
+      set RELEASE_DISTRIBUTION_FLAG=--!RELEASE_DISTRIBUTION! "rem-!RANDOM!-!RELEASE_NODE!"
+    )
+
     "!REL_VSN_DIR!\iex.bat" ^
       --werl --hidden --cookie "!RELEASE_COOKIE!" ^
-      --!RELEASE_DISTRIBUTION! "rem-!RANDOM!-!RELEASE_NODE!" ^
-      --boot "!REL_VSN_DIR!\start_clean" ^
+      !RELEASE_DISTRIBUTION_FLAG! ^
+      --boot "!REL_VSN_DIR!\!RELEASE_BOOT_SCRIPT_CLEAN!" ^
       --boot-var RELEASE_LIB "!RELEASE_ROOT!\lib" ^
       --remsh "!RELEASE_NODE!"
     goto end
 
     :rpc
+    if "!RELEASE_DISTRIBUTION!" == "none" (
+      set RELEASE_DISTRIBUTION_FLAG=
+    ) else (
+      set RELEASE_DISTRIBUTION_FLAG=--!RELEASE_DISTRIBUTION! "rpc-!RANDOM!-!RELEASE_NODE!"
+    )
+
     "!REL_VSN_DIR!\elixir.bat" ^
       --hidden --cookie "!RELEASE_COOKIE!" ^
-      --!RELEASE_DISTRIBUTION! "rpc-!RANDOM!-!RELEASE_NODE!" ^
-      --boot "!REL_VSN_DIR!\start_clean" ^
+      !RELEASE_DISTRIBUTION_FLAG! ^
+      --boot "!REL_VSN_DIR!\!RELEASE_BOOT_SCRIPT_CLEAN!" ^
       --boot-var RELEASE_LIB "!RELEASE_ROOT!\lib" ^
       --rpc-eval "!RELEASE_NODE!" "!REL_RPC!"
     goto end
@@ -364,9 +414,15 @@ defmodule Mix.Tasks.Release.Init do
       set ERLSRV=erlsrv.exe
     )
 
-    !ERLSRV! add !RELEASE_NAME!_!RELEASE_NAME! ^
-      -name "!RELEASE_NODE!" ^
-      -args "-setcookie !RELEASE_COOKIE! -config !RELEASE_SYS_CONFIG! -boot !REL_VSN_DIR!\start -boot_var RELEASE_LIB !RELEASE_ROOT!\lib -args_file !REL_VSN_DIR!\vm.args"
+    if "!RELEASE_DISTRIBUTION!" == "none" (
+      echo ERROR: RELEASE_DISTRIBUTION is required in install command
+      goto end
+    )
+
+    "!ERLSRV!" add "!RELEASE_NAME!_!RELEASE_NAME!" ^
+      -!RELEASE_DISTRIBUTION! "!RELEASE_NODE!" ^
+      -env RELEASE_ROOT="!RELEASE_ROOT!" -env RELEASE_NAME="!RELEASE_NAME!" -env RELEASE_VSN="!RELEASE_VSN!" -env RELEASE_MODE="!RELEASE_MODE!" -env RELEASE_COOKIE="!RELEASE_COOKIE!" -env RELEASE_NODE="!RELEASE_NODE!" -env RELEASE_VM_ARGS="!RELEASE_VM_ARGS!" -env RELEASE_TMP="!RELEASE_TMP!" -env RELEASE_SYS_CONFIG="!RELEASE_SYS_CONFIG!" ^
+      -args "-setcookie !RELEASE_COOKIE! -config !RELEASE_SYS_CONFIG! <%= release_mode(@release, "!RELEASE_MODE!") %> -boot !REL_VSN_DIR!\start -boot_var RELEASE_LIB !RELEASE_ROOT!\lib -args_file !REL_VSN_DIR!\vm.args"
 
     if %ERRORLEVEL% EQU 0 (
       echo Service installed but not started. From now on, it must be started and stopped by erlsrv:

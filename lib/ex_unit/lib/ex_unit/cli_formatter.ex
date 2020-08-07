@@ -13,7 +13,7 @@ defmodule ExUnit.CLIFormatter do
     config = %{
       seed: opts[:seed],
       trace: opts[:trace],
-      colors: Keyword.put_new(opts[:colors], :enabled, IO.ANSI.enabled?()),
+      colors: colors(opts),
       width: get_terminal_width(),
       slowest: opts[:slowest],
       test_counter: %{},
@@ -37,12 +37,12 @@ defmodule ExUnit.CLIFormatter do
   end
 
   def handle_cast({:test_started, %ExUnit.Test{} = test}, config) do
-    if config.trace, do: IO.write("  * #{test.name}")
+    if config.trace, do: IO.write("#{trace_test_started(test)} [#{trace_test_line(test)}]")
     {:noreply, config}
   end
 
   def handle_cast({:test_finished, %ExUnit.Test{state: nil} = test}, config) do
-    if config.trace() do
+    if config.trace do
       IO.puts(success(trace_test_result(test), config))
     else
       IO.write(success(".", config))
@@ -78,7 +78,7 @@ defmodule ExUnit.CLIFormatter do
   end
 
   def handle_cast({:test_finished, %ExUnit.Test{state: {:invalid, _}} = test}, config) do
-    if config.trace() do
+    if config.trace do
       IO.puts(invalid(trace_test_result(test), config))
     else
       IO.write(invalid("?", config))
@@ -91,7 +91,7 @@ defmodule ExUnit.CLIFormatter do
   end
 
   def handle_cast({:test_finished, %ExUnit.Test{state: {:failed, failures}} = test}, config) do
-    if config.trace() do
+    if config.trace do
       IO.puts(failure(trace_test_result(test), config))
     end
 
@@ -121,9 +121,9 @@ defmodule ExUnit.CLIFormatter do
     {:noreply, config}
   end
 
-  def handle_cast({:module_started, %ExUnit.TestModule{name: name}}, config) do
+  def handle_cast({:module_started, %ExUnit.TestModule{name: name, file: file}}, config) do
     if config.trace() do
-      IO.puts("\n#{inspect(name)}")
+      IO.puts("\n#{inspect(name)} [#{Path.relative_to_cwd(file)}]")
     end
 
     {:noreply, config}
@@ -171,16 +171,28 @@ defmodule ExUnit.CLIFormatter do
     "#{format_us(time)}ms"
   end
 
+  defp trace_test_line(%ExUnit.Test{tags: tags}) do
+    "L##{tags.line}"
+  end
+
+  defp trace_test_file_line(%ExUnit.Test{tags: tags}) do
+    "#{Path.relative_to_cwd(tags.file)}:#{tags.line}"
+  end
+
+  defp trace_test_started(test) do
+    "  * #{test.name}"
+  end
+
   defp trace_test_result(test) do
-    "\r  * #{test.name} (#{trace_test_time(test)})"
+    "\r#{trace_test_started(test)} (#{trace_test_time(test)}) [#{trace_test_line(test)}]"
   end
 
   defp trace_test_excluded(test) do
-    "\r  * #{test.name} (excluded)"
+    "\r#{trace_test_started(test)} (excluded) [#{trace_test_line(test)}]"
   end
 
   defp trace_test_skipped(test) do
-    "\r  * #{test.name} (skipped)"
+    "\r#{trace_test_started(test)} (skipped) [#{trace_test_line(test)}]"
   end
 
   defp normalize_us(us) do
@@ -226,8 +238,9 @@ defmodule ExUnit.CLIFormatter do
     |> Enum.map(&format_slow_test/1)
   end
 
-  defp format_slow_test(%ExUnit.Test{name: name, time: time, module: module}) do
-    "  * #{name} (#{format_us(time)}ms) (#{inspect(module)})\n"
+  defp format_slow_test(%ExUnit.Test{time: time, module: module} = test) do
+    "#{trace_test_started(test)} (#{inspect(module)}) (#{format_us(time)}ms) " <>
+      "[#{trace_test_file_line(test)}]\n"
   end
 
   defp extract_slowest_tests(%{slowest: slowest, test_timings: timings} = _config) do
@@ -316,6 +329,14 @@ defmodule ExUnit.CLIFormatter do
     end
   end
 
+  defp colorize_doc(escape, doc, %{colors: colors}) do
+    if colors[:enabled] do
+      Inspect.Algebra.color(doc, escape, %Inspect.Opts{syntax_colors: colors})
+    else
+      doc
+    end
+  end
+
   defp success(msg, config) do
     colorize(:green, msg, config)
   end
@@ -340,15 +361,15 @@ defmodule ExUnit.CLIFormatter do
 
   defp formatter(:location_info, msg, config), do: colorize([:bright, :black], msg, config)
 
-  defp formatter(:diff_delete, msg, config), do: colorize(:red, msg, config)
+  defp formatter(:diff_delete, doc, config), do: colorize_doc(:diff_delete, doc, config)
 
-  defp formatter(:diff_delete_whitespace, msg, config),
-    do: colorize(IO.ANSI.color_background(2, 0, 0), msg, config)
+  defp formatter(:diff_delete_whitespace, doc, config),
+    do: colorize_doc(:diff_delete_whitespace, doc, config)
 
-  defp formatter(:diff_insert, msg, config), do: colorize(:green, msg, config)
+  defp formatter(:diff_insert, doc, config), do: colorize_doc(:diff_insert, doc, config)
 
-  defp formatter(:diff_insert_whitespace, msg, config),
-    do: colorize(IO.ANSI.color_background(0, 2, 0), msg, config)
+  defp formatter(:diff_insert_whitespace, doc, config),
+    do: colorize_doc(:diff_insert_whitespace, doc, config)
 
   defp formatter(:blame_diff, msg, %{colors: colors} = config) do
     if colors[:enabled] do
@@ -368,6 +389,19 @@ defmodule ExUnit.CLIFormatter do
       {:ok, width} -> max(40, width)
       _ -> 80
     end
+  end
+
+  @default_colors [
+    diff_delete: :red,
+    diff_delete_whitespace: IO.ANSI.color_background(2, 0, 0),
+    diff_insert: :green,
+    diff_insert_whitespace: IO.ANSI.color_background(0, 2, 0)
+  ]
+
+  defp colors(opts) do
+    @default_colors
+    |> Keyword.merge(opts[:colors])
+    |> Keyword.put_new(:enabled, IO.ANSI.enabled?())
   end
 
   defp print_logs(""), do: nil

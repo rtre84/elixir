@@ -3,6 +3,9 @@ Code.require_file("../test_helper.exs", __DIR__)
 defmodule Mix.RebarTest do
   use MixTest.Case
 
+  # rebar_dep and git_rebar are loaded dynamically
+  @compile {:no_warn_undefined, [:rebar_dep, :git_rebar]}
+
   defmodule RebarAsDep do
     def project do
       [
@@ -216,15 +219,15 @@ defmodule Mix.RebarTest do
     end
 
     test "gets and compiles dependencies for Rebar" do
-      Mix.Project.push(RebarAsDep)
+      Mix.Project.push(RebarAsDepWithEnv)
 
       in_tmp("get and compile dependencies for Rebar", fn ->
         Mix.Tasks.Deps.Get.run([])
         assert_received {:mix_shell, :info, ["* Getting git_rebar" <> _]}
 
         Mix.Tasks.Deps.Compile.run([])
-        assert_received {:mix_shell, :run, ["===> Compiling git_rebar\n"]}
-        assert_received {:mix_shell, :run, ["===> Compiling rebar_dep\n"]}
+        assert_received {:mix_shell, :run, ["==> git_rebar (compile)\n"]}
+        assert_received {:mix_shell, :run, ["==> rebar_dep (compile)\n"]}
         assert :git_rebar.any_function() == :ok
         assert :rebar_dep.any_function() == :ok
 
@@ -263,6 +266,9 @@ defmodule Mix.RebarTest do
       end)
     end
 
+    # We run only on Unix because Windows has a hard time
+    # removing the Rebar executable after executed.
+    @tag [unix: true]
     test "gets and compiles dependencies for Rebar3" do
       Mix.Project.push(Rebar3AsDep)
 

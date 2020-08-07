@@ -14,7 +14,7 @@ defmodule SystemTest do
     assert is_binary(build_info[:otp_release])
 
     if build_info[:revision] != "" do
-      assert String.length(build_info[:revision]) == 7
+      assert String.length(build_info[:revision]) >= 7
     end
 
     version_file = Path.join([__DIR__, "../../../..", "VERSION"]) |> Path.expand()
@@ -43,7 +43,7 @@ defmodule SystemTest do
   end
 
   test "argv/0" do
-    list = elixir('-e "IO.inspect System.argv" -- -o opt arg1 arg2 --long-opt 10')
+    list = elixir('-e "IO.inspect System.argv()" -- -o opt arg1 arg2 --long-opt 10')
     {args, _} = Code.eval_string(list, [])
     assert args == ["-o", "opt", "arg1", "arg2", "--long-opt", "10"]
   end
@@ -110,9 +110,9 @@ defmodule SystemTest do
     end
 
     @echo "echo-elixir-test"
-
-    test "cmd/2 with absolute and relative paths" do
-      echo = tmp_path(@echo)
+    @tag :tmp_dir
+    test "cmd/2 with absolute and relative paths", config do
+      echo = Path.join(config.tmp_dir, @echo)
       File.mkdir_p!(Path.dirname(echo))
       File.cp!(System.find_executable("cmd"), echo)
 
@@ -151,9 +151,9 @@ defmodule SystemTest do
     end
 
     @echo "echo-elixir-test"
-
-    test "cmd/2 with absolute and relative paths" do
-      echo = tmp_path(@echo)
+    @tag :tmp_dir
+    test "cmd/2 with absolute and relative paths", config do
+      echo = Path.join(config.tmp_dir, @echo)
       File.mkdir_p!(Path.dirname(echo))
       File.cp!(System.find_executable("echo"), echo)
 

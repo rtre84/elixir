@@ -152,13 +152,17 @@ for  /d %%d in ("!SCRIPT_PATH!..\lib\*.") do (
 )
 
 :run
+reg query HKCU\Console /v VirtualTerminalLevel 2>nul | findstr /e "0x1" >nul 2>nul
+if %errorlevel% == 0 (
+  set beforeExtra=-elixir ansi_enabled true !beforeExtra!
+)
 if not !runMode! == "iex" (
   set beforeExtra=-noshell -s elixir start_cli !beforeExtra!
 )
 if defined useWerl (
-  start !ERTS_BIN!werl.exe !ext_libs! !ELIXIR_ERL_OPTIONS! !parsErlang! !beforeExtra! -extra !parsElixir!
+  start "" "!ERTS_BIN!werl.exe" !ext_libs! !ELIXIR_ERL_OPTIONS! !parsErlang! !beforeExtra! -extra !parsElixir!
 ) else (
-  !ERTS_BIN!erl.exe !ext_libs! !ELIXIR_ERL_OPTIONS! !parsErlang! !beforeExtra! -extra !parsElixir!
+  "!ERTS_BIN!erl.exe" !ext_libs! !ELIXIR_ERL_OPTIONS! !parsErlang! !beforeExtra! -extra !parsElixir!
 )
 :end
 endlocal

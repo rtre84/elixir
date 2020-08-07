@@ -11,7 +11,7 @@ defmodule StringTest do
     assert String.next_codepoint("") == nil
   end
 
-  # test cases described in http://mortoray.com/2013/11/27/the-string-type-is-broken/
+  # test cases described in https://mortoray.com/2013/11/27/the-string-type-is-broken/
   test "Unicode" do
     assert String.reverse("noël") == "lëon"
     assert String.slice("noël", 0..2) == "noë"
@@ -394,25 +394,64 @@ defmodule StringTest do
     assert String.reverse(String.reverse("Hello \r\n World")) == "Hello \r\n World"
   end
 
-  test "replace/3" do
-    assert String.replace("a,b,c", ",", "-") == "a-b-c"
-    assert String.replace("a,b,c", [",", "b"], "-") == "a---c"
+  describe "replace/3" do
+    test "with empty string and string replacement" do
+      assert String.replace("elixir", "", "") == "elixir"
+      assert String.replace("ELIXIR", "", ".") == ".E.L.I.X.I.R."
+      assert String.replace("ELIXIR", "", ".", global: true) == ".E.L.I.X.I.R."
+      assert String.replace("ELIXIR", "", ".", global: false) == ".ELIXIR"
+    end
 
-    assert String.replace("a,b,c", ",", "-", global: false) == "a-b,c"
-    assert String.replace("a,b,c", [",", "b"], "-", global: false) == "a-b,c"
-    assert String.replace("ãéã", "é", "e", global: false) == "ãeã"
+    test "with match pattern and string replacement" do
+      assert String.replace("a,b,c", ",", "-") == "a-b-c"
+      assert String.replace("a,b,c", [",", "b"], "-") == "a---c"
 
-    assert String.replace("a,b,c", ",", "[]", insert_replaced: 2) == "a[],b[],c"
-    assert String.replace("a,b,c", ",", "[]", insert_replaced: [1, 1]) == "a[,,]b[,,]c"
-    assert String.replace("a,b,c", "b", "[]", insert_replaced: 1, global: false) == "a,[b],c"
+      assert String.replace("a,b,c", ",", "-", global: false) == "a-b,c"
+      assert String.replace("a,b,c", [",", "b"], "-", global: false) == "a-b,c"
+      assert String.replace("ãéã", "é", "e", global: false) == "ãeã"
+    end
 
-    assert String.replace("a,b,c", ~r/,(.)/, ",\\1\\1") == "a,bb,cc"
-    assert String.replace("a,b,c", ~r/,(.)/, ",\\1\\1", global: false) == "a,bb,c"
+    test "with regex and string replacement" do
+      assert String.replace("a,b,c", ~r/,(.)/, ",\\1\\1") == "a,bb,cc"
+      assert String.replace("a,b,c", ~r/,(.)/, ",\\1\\1", global: false) == "a,bb,c"
+    end
 
-    assert String.replace("elixir", "", "") == "elixir"
-    assert String.replace("ELIXIR", "", ".") == ".E.L.I.X.I.R."
-    assert String.replace("ELIXIR", "", ".", global: true) == ".E.L.I.X.I.R."
-    assert String.replace("ELIXIR", "", ".", global: false) == ".ELIXIR"
+    test "with empty string and function replacement" do
+      assert String.replace("elixir", "", fn "" -> "" end) == "elixir"
+      assert String.replace("ELIXIR", "", fn "" -> "." end) == ".E.L.I.X.I.R."
+      assert String.replace("ELIXIR", "", fn "" -> "." end, global: true) == ".E.L.I.X.I.R."
+      assert String.replace("ELIXIR", "", fn "" -> "." end, global: false) == ".ELIXIR"
+
+      assert String.replace("elixir", "", fn "" -> [""] end) == "elixir"
+      assert String.replace("ELIXIR", "", fn "" -> ["."] end) == ".E.L.I.X.I.R."
+      assert String.replace("ELIXIR", "", fn "" -> ["."] end, global: true) == ".E.L.I.X.I.R."
+      assert String.replace("ELIXIR", "", fn "" -> ["."] end, global: false) == ".ELIXIR"
+    end
+
+    test "with match pattern and function replacement" do
+      assert String.replace("a,b,c", ",", fn "," -> "-" end) == "a-b-c"
+      assert String.replace("a,b,c", [",", "b"], fn x -> "[#{x}]" end) == "a[,][b][,]c"
+      assert String.replace("a,b,c", [",", "b"], fn x -> [?[, x, ?]] end) == "a[,][b][,]c"
+
+      assert String.replace("a,b,c", ",", fn "," -> "-" end, global: false) == "a-b,c"
+      assert String.replace("a,b,c", [",", "b"], fn x -> "[#{x}]" end, global: false) == "a[,]b,c"
+      assert String.replace("ãéã", "é", fn "é" -> "e" end, global: false) == "ãeã"
+    end
+
+    test "with regex and function replacement" do
+      assert String.replace("a,b,c", ~r/,(.)/, fn x -> "#{x}#{x}" end) == "a,b,b,c,c"
+      assert String.replace("a,b,c", ~r/,(.)/, fn x -> [x, x] end) == "a,b,b,c,c"
+      assert String.replace("a,b,c", ~r/,(.)/, fn x -> "#{x}#{x}" end, global: false) == "a,b,b,c"
+      assert String.replace("a,b,c", ~r/,(.)/, fn x -> [x, x] end, global: false) == "a,b,b,c"
+    end
+  end
+
+  describe "replace/4" do
+    test "with incorrect params" do
+      assert_raise FunctionClauseError, "no function clause matching in String.replace/4", fn ->
+        String.replace("a,b,c", "a,b,c", ",", "")
+      end
+    end
   end
 
   test "duplicate/2" do
@@ -468,46 +507,6 @@ defmodule StringTest do
     assert String.equivalent?("ṩ", "ṩ")
     refute String.equivalent?("ELIXIR", "elixir")
     refute String.equivalent?("døge", "dóge")
-  end
-
-  test "normalize/2" do
-    assert String.normalize("ŝ", :nfd) == "ŝ"
-    assert String.normalize("ḇravô", :nfd) == "ḇravô"
-    assert String.normalize("ṩierra", :nfd) == "ṩierra"
-    assert String.normalize("뢴", :nfd) == "뢴"
-    assert String.normalize("êchǭ", :nfc) == "êchǭ"
-    assert String.normalize("거̄", :nfc) == "거̄"
-    assert String.normalize("뢴", :nfc) == "뢴"
-
-    ## Cases from NormalizationTest.txt
-
-    # 05B8 05B9 05B1 0591 05C3 05B0 05AC 059F
-    # 05B1 05B8 05B9 0591 05C3 05B0 05AC 059F
-    # HEBREW POINT QAMATS, HEBREW POINT HOLAM, HEBREW POINT HATAF SEGOL,
-    # HEBREW ACCENT ETNAHTA, HEBREW PUNCTUATION SOF PASUQ, HEBREW POINT SHEVA,
-    # HEBREW ACCENT ILUY, HEBREW ACCENT QARNEY PARA
-    assert String.normalize("ֱָֹ֑׃ְ֬֟", :nfc) == "ֱָֹ֑׃ְ֬֟"
-
-    # 095D (exclusion list)
-    # 0922 093C
-    # DEVANAGARI LETTER RHA
-    assert String.normalize("ढ़", :nfc) == "ढ़"
-
-    # 0061 0315 0300 05AE 0340 0062
-    # 00E0 05AE 0300 0315 0062
-    # LATIN SMALL LETTER A, COMBINING COMMA ABOVE RIGHT, COMBINING GRAVE ACCENT,
-    # HEBREW ACCENT ZINOR, COMBINING GRAVE TONE MARK, LATIN SMALL LETTER B
-    assert String.normalize("à֮̀̕b", :nfc) == "à֮̀̕b"
-
-    # 0344
-    # 0308 0301
-    # COMBINING GREEK DIALYTIKA TONOS
-    assert String.normalize("\u0344", :nfc) == "\u0308\u0301"
-
-    # 115B9 0334 115AF
-    # 115B9 0334 115AF
-    # SIDDHAM VOWEL SIGN AI, COMBINING TILDE OVERLAY, SIDDHAM VOWEL SIGN AA
-    assert String.normalize("𑖹̴𑖯", :nfc) == "𑖹̴𑖯"
   end
 
   test "graphemes/1" do
@@ -629,7 +628,7 @@ defmodule StringTest do
     assert String.slice("", 1..1) == ""
     assert String.slice("あいうえお", -2..-4) == ""
     assert String.slice("あいうえお", -10..-15) == ""
-    assert String.slice("hello あいうえお unicode", 8..-1) == "うえお unicode"
+    assert String.slice("hello あいうえお Unicode", 8..-1) == "うえお Unicode"
     assert String.slice("abc", -1..14) == "c"
   end
 
@@ -749,5 +748,106 @@ defmodule StringTest do
     assert String.myers_difference("abc", "abc") == [eq: "abc"]
     assert String.myers_difference("abc", "aйbc") == [eq: "a", ins: "й", eq: "bc"]
     assert String.myers_difference("aйbc", "abc") == [eq: "a", del: "й", eq: "bc"]
+  end
+
+  test "normalize/2" do
+    assert String.normalize("ŝ", :nfd) == "ŝ"
+    assert String.normalize("ḇravô", :nfd) == "ḇravô"
+    assert String.normalize("ṩierra", :nfd) == "ṩierra"
+    assert String.normalize("뢴", :nfd) == "뢴"
+    assert String.normalize("êchǭ", :nfc) == "êchǭ"
+    assert String.normalize("거̄", :nfc) == "거̄"
+    assert String.normalize("뢴", :nfc) == "뢴"
+
+    ## Error cases
+    assert String.normalize(<<15, 216>>, :nfc) == <<15, 216>>
+    assert String.normalize(<<15, 216>>, :nfd) == <<15, 216>>
+    assert String.normalize(<<216, 15>>, :nfc) == <<216, 15>>
+    assert String.normalize(<<216, 15>>, :nfd) == <<216, 15>>
+
+    assert String.normalize(<<15, 216>>, :nfkc) == <<15, 216>>
+    assert String.normalize(<<15, 216>>, :nfkd) == <<15, 216>>
+    assert String.normalize(<<216, 15>>, :nfkc) == <<216, 15>>
+    assert String.normalize(<<216, 15>>, :nfkd) == <<216, 15>>
+
+    ## Cases from NormalizationTest.txt
+
+    # 05B8 05B9 05B1 0591 05C3 05B0 05AC 059F
+    # 05B1 05B8 05B9 0591 05C3 05B0 05AC 059F
+    # HEBREW POINT QAMATS, HEBREW POINT HOLAM, HEBREW POINT HATAF SEGOL,
+    # HEBREW ACCENT ETNAHTA, HEBREW PUNCTUATION SOF PASUQ, HEBREW POINT SHEVA,
+    # HEBREW ACCENT ILUY, HEBREW ACCENT QARNEY PARA
+    assert String.normalize("ֱָֹ֑׃ְ֬֟", :nfc) == "ֱָֹ֑׃ְ֬֟"
+
+    # 095D (exclusion list)
+    # 0922 093C
+    # DEVANAGARI LETTER RHA
+    assert String.normalize("ढ़", :nfc) == "ढ़"
+
+    # 0061 0315 0300 05AE 0340 0062
+    # 00E0 05AE 0300 0315 0062
+    # LATIN SMALL LETTER A, COMBINING COMMA ABOVE RIGHT, COMBINING GRAVE ACCENT,
+    # HEBREW ACCENT ZINOR, COMBINING GRAVE TONE MARK, LATIN SMALL LETTER B
+    assert String.normalize("à֮̀̕b", :nfc) == "à֮̀̕b"
+
+    # 0344
+    # 0308 0301
+    # COMBINING GREEK DIALYTIKA TONOS
+    assert String.normalize("\u0344", :nfc) == "\u0308\u0301"
+
+    # 115B9 0334 115AF
+    # 115B9 0334 115AF
+    # SIDDHAM VOWEL SIGN AI, COMBINING TILDE OVERLAY, SIDDHAM VOWEL SIGN AA
+    assert String.normalize("𑖹̴𑖯", :nfc) == "𑖹̴𑖯"
+
+    # HEBREW ACCENT ETNAHTA, HEBREW PUNCTUATION SOF PASUQ, HEBREW POINT SHEVA,
+    # HEBREW ACCENT ILUY, HEBREW ACCENT QARNEY PARA
+    assert String.normalize("ֱָֹ֑׃ְ֬֟", :nfc) == "ֱָֹ֑׃ְ֬֟"
+
+    # 095D (exclusion list)
+    # HEBREW ACCENT ETNAHTA, HEBREW PUNCTUATION SOF PASUQ, HEBREW POINT SHEVA,
+    # HEBREW ACCENT ILUY, HEBREW ACCENT QARNEY PARA
+    assert String.normalize("ֱָֹ֑׃ְ֬֟", :nfc) == "ֱָֹ֑׃ְ֬֟"
+
+    # 095D (exclusion list)
+    # 0922 093C
+    # DEVANAGARI LETTER RHA
+    assert String.normalize("ढ़", :nfc) == "ढ़"
+
+    # 0061 0315 0300 05AE 0340 0062
+    # 00E0 05AE 0300 0315 0062
+    # LATIN SMALL LETTER A, COMBINING COMMA ABOVE RIGHT, COMBINING GRAVE ACCENT,
+    # HEBREW ACCENT ZINOR, COMBINING GRAVE TONE MARK, LATIN SMALL LETTER B
+    assert String.normalize("à֮̀̕b", :nfc) == "à֮̀̕b"
+
+    # 0344
+    # 0308 0301
+    # COMBINING GREEK DIALYTIKA TONOS
+    assert String.normalize("\u0344", :nfc) == "\u0308\u0301"
+
+    # 115B9 0334 115AF
+    # 115B9 0334 115AF
+    # SIDDHAM VOWEL SIGN AI, COMBINING TILDE OVERLAY, SIDDHAM VOWEL SIGN AA
+    assert String.normalize("𑖹̴𑖯", :nfc) == "𑖹̴𑖯"
+
+    # (ﬀ; ﬀ; ﬀ; ff; ff; ) LATIN SMALL LIGATURE FF
+    # FB00;FB00;FB00;0066 0066;0066 0066;
+    assert String.normalize("ﬀ", :nfkd) == "\u0066\u0066"
+
+    # (ﬂ; ﬂ; ﬂ; fl; fl; ) LATIN SMALL LIGATURE FL
+    # FB02;FB02;FB02;0066 006C;0066 006C;
+    assert String.normalize("ﬂ", :nfkd) == "\u0066\u006C"
+
+    # (ﬅ; ﬅ; ﬅ; st; st; ) LATIN SMALL LIGATURE LONG S T
+    # FB05;FB05;FB05;0073 0074;0073 0074;
+    assert String.normalize("ﬅ", :nfkd) == "\u0073\u0074"
+
+    # (ﬆ; ﬆ; ﬆ; st; st; ) LATIN SMALL LIGATURE ST
+    # FB06;FB06;FB06;0073 0074;0073 0074;
+    assert String.normalize("\u0073\u0074", :nfkc) == "\u0073\u0074"
+
+    # (ﬓ; ﬓ; ﬓ; մն; մն; ) ARMENIAN SMALL LIGATURE MEN NOW
+    # FB13;FB13;FB13;0574 0576;0574 0576;
+    assert String.normalize("\u0574\u0576", :nfkc) == "\u0574\u0576"
   end
 end

@@ -22,9 +22,10 @@ defmodule Kernel.Typespec do
       {:docs_v1, _, _, _, _, _, docs} ->
         for {{:type, name, arity}, _, _, doc, _} <- docs do
           case doc do
-            :none -> {{name, arity}, nil}
-            :hidden -> {{name, arity}, false}
             %{"en" => doc_string} -> {{name, arity}, doc_string}
+            :none -> {{name, arity}, nil}
+            # Hidden or unknown format are ignored
+            _ -> {{name, arity}, false}
           end
         end
 
@@ -83,7 +84,7 @@ defmodule Kernel.Typespec do
         store_typespec(bag, kind, expr, pos)
 
         case :ets.lookup(set, {:function, name, arity}) do
-          [{{:function, ^name, ^arity}, line, _, doc, doc_meta}] ->
+          [{{:function, ^name, ^arity}, _, line, _, doc, doc_meta}] ->
             store_doc(set, kind, name, arity, line, :doc, doc, doc_meta)
 
           _ ->
@@ -250,7 +251,13 @@ defmodule Kernel.Typespec do
           end
 
           if Map.has_key?(type_pairs, type_pair) do
-            compile_error(env, "type #{name}/#{arity} is already defined")
+            {error_full_path, error_line} = type_pairs[type_pair]
+            error_relative_path = Path.relative_to_cwd(error_full_path)
+
+            compile_error(
+              env,
+              "type #{name}/#{arity} is already defined in #{error_relative_path}:#{error_line}"
+            )
           end
 
           Map.put(type_pairs, type_pair, {file, line})
@@ -285,7 +292,7 @@ defmodule Kernel.Typespec do
       if is_atom(args) do
         []
       else
-        for(arg <- args, do: variable(arg))
+        :lists.map(&variable/1, args)
       end
 
     vars = :lists.filter(&match?({:var, _, _}, &1), args)
@@ -464,7 +471,7 @@ defmodule Kernel.Typespec do
          _,
          state
        )
-       when is_atom(ctx1) and is_atom(ctx2) and is_integer(unit) and unit >= 0 do
+       when is_atom(ctx1) and is_atom(ctx2) and unit in 1..256 do
     line = line(meta)
     {{:type, line, :binary, [{:integer, line, 0}, {:integer, line(unit_meta), unit}]}, state}
   end
@@ -489,7 +496,7 @@ defmodule Kernel.Typespec do
          state
        )
        when is_atom(ctx1) and is_atom(ctx2) and is_atom(ctx3) and is_integer(size) and
-              is_integer(unit) and size >= 0 and unit >= 0 do
+              size >= 0 and unit in 1..256 do
     args = [{:integer, line(size_meta), size}, {:integer, line(unit_meta), unit}]
     {{:type, line(meta), :binary, args}, state}
   end
@@ -497,7 +504,7 @@ defmodule Kernel.Typespec do
   defp typespec({:<<>>, _meta, _args}, _vars, caller, _state) do
     message =
       "invalid binary specification, expected <<_::size>>, <<_::_*unit>>, " <>
-        "or <<_::size, _::_*unit>> with size and unit being non-negative integers"
+        "or <<_::size, _::_*unit>> with size being non-negative integers, and unit being an integer between 1 and 256"
 
     compile_error(caller, message)
   end
@@ -557,7 +564,7 @@ defmodule Kernel.Typespec do
     types =
       :lists.map(
         fn {field, _} -> {field, Keyword.get(fields, field, quote(do: term()))} end,
-        struct
+        :lists.sort(struct)
       )
 
     fun = fn {field, _} ->
@@ -661,7 +668,7 @@ defmodule Kernel.Typespec do
         :elixir_errors.erl_warn(caller.line, caller.file, message)
 
         # This may be generating an invalid typespec but we need to generate it
-        # to avoid breaking existing code that was valid but only broke dialyzer
+        # to avoid breaking existing code that was valid but only broke Dialyzer
         {right, state} = typespec(expr, vars, caller, state)
         {{:ann_type, line(meta), [{:var, line(var_meta), var_name}, right]}, state}
 
@@ -680,7 +687,7 @@ defmodule Kernel.Typespec do
     :elixir_errors.erl_warn(caller.line, caller.file, message)
 
     # This may be generating an invalid typespec but we need to generate it
-    # to avoid breaking existing code that was valid but only broke dialyzer
+    # to avoid breaking existing code that was valid but only broke Dialyzer
     state = %{state | undefined_type_error_enabled?: false}
     {left, state} = typespec(left, vars, caller, state)
     state = %{state | undefined_type_error_enabled?: true}
@@ -725,14 +732,19 @@ defmodule Kernel.Typespec do
     # aliases in typespecs as compile time dependencies.
     remote = Macro.expand(remote, %{caller | function: {:typespec, 0}})
 
-    unless is_atom(remote) do
-      compile_error(caller, "invalid remote in typespec: #{Macro.to_string(orig)}")
-    end
+    cond do
+      not is_atom(remote) ->
+        compile_error(caller, "invalid remote in typespec: #{Macro.to_string(orig)}")
 
-    {remote_spec, state} = typespec(remote, vars, caller, state)
-    {name_spec, state} = typespec(name, vars, caller, state)
-    type = {remote_spec, meta, name_spec, args}
-    remote_type(type, vars, caller, state)
+      remote == caller.module ->
+        typespec({name, meta, args}, vars, caller, state)
+
+      true ->
+        {remote_spec, state} = typespec(remote, vars, caller, state)
+        {name_spec, state} = typespec(name, vars, caller, state)
+        type = {remote_spec, meta, name_spec, args}
+        remote_type(type, vars, caller, state)
+    end
   end
 
   # Handle tuples
@@ -828,7 +840,10 @@ defmodule Kernel.Typespec do
       false ->
         if state.undefined_type_error_enabled? and
              not Map.has_key?(state.defined_type_pairs, {name, arity}) do
-          compile_error(caller, "type #{name}/#{arity} undefined")
+          compile_error(
+            caller,
+            "type #{name}/#{arity} undefined (no such type in #{inspect(caller.module)})"
+          )
         end
 
         state =

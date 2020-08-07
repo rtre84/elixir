@@ -46,10 +46,40 @@ defmodule Kernel.SpecialFormsTest do
       assert x == 0
     end
 
+    test "does not leak variables from conditions" do
+      x = :not_nil
+
+      result =
+        cond do
+          x = List.first([]) ->
+            x
+
+          true ->
+            x
+        end
+
+      assert result == :not_nil
+    end
+
     test "does not warn on non-boolean as catch-all" do
       cond do
         List.flatten([]) == [] -> :good
         :otherwise -> :also_good
+      end
+    end
+
+    def false_fun(), do: false
+
+    test "cond_clause error keeps line number in stacktrace" do
+      try do
+        cond do
+          false_fun() -> :ok
+        end
+      rescue
+        _ ->
+          assert [{Kernel.SpecialFormsTest, _, _, meta} | _] = __STACKTRACE__
+          assert meta[:file]
+          assert meta[:line]
       end
     end
   end

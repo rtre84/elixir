@@ -583,7 +583,7 @@ defmodule Process do
       send(:test, :hello)
       #=> :hello
       send(:wrong_name, :hello)
-      #=> ** (ArgumentError) argument error
+      ** (ArgumentError) argument error
 
   """
   @spec register(pid | port, atom) :: true
@@ -620,7 +620,7 @@ defmodule Process do
       Process.unregister(:test)
       #=> true
       Process.unregister(:wrong_name)
-      #=> ** (ArgumentError) argument error
+      ** (ArgumentError) argument error
 
   """
   @spec unregister(atom) :: true
@@ -705,11 +705,10 @@ defmodule Process do
   """
   @spec flag(:error_handler, module) :: module
   @spec flag(:max_heap_size, heap_size) :: heap_size
-  @spec flag(:message_queue_data, :erlang.message_queue_data()) :: :erlang.message_queue_data()
+  # :off_heap | :on_heap twice because :erlang.message_queue_data() is not exported
+  @spec flag(:message_queue_data, :off_heap | :on_heap) :: :off_heap | :on_heap
   @spec flag(:min_bin_vheap_size, non_neg_integer) :: non_neg_integer
   @spec flag(:min_heap_size, non_neg_integer) :: non_neg_integer
-  @spec flag(:monitor_nodes, term) :: term
-  @spec flag({:monitor_nodes, term()}, term) :: term
   @spec flag(:priority, priority_level) :: priority_level
   @spec flag(:save_calls, 0..10000) :: 0..10000
   @spec flag(:sensitive, boolean) :: boolean

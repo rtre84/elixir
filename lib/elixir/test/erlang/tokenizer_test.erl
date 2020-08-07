@@ -36,9 +36,9 @@ op_kw_test() ->
    {atom, {1, 6, nil}, bar}] = tokenize(":foo+:bar").
 
 scientific_test() ->
-  [{float, {1, 1, 0.1}, "1.0e-1"}] = tokenize("1.0e-1"),
-  [{float, {1, 1, 0.1}, "1.0E-1"}] = tokenize("1.0E-1"),
-  [{float, {1, 1, 1.2345678e-7}, "1_234.567_8e-10"}] = tokenize("1_234.567_8e-10"),
+  [{flt, {1, 1, 0.1}, "1.0e-1"}] = tokenize("1.0e-1"),
+  [{flt, {1, 1, 0.1}, "1.0E-1"}] = tokenize("1.0E-1"),
+  [{flt, {1, 1, 1.2345678e-7}, "1_234.567_8e-10"}] = tokenize("1_234.567_8e-10"),
   {1, 1, "invalid float number ", "1.0e309"} = tokenize_error("1.0e309").
 
 hex_bin_octal_test() ->
@@ -87,11 +87,11 @@ int_test() ->
   [{int, {1, 1, 100000}, "0100000"}] = tokenize("0100000").
 
 float_test() ->
-  [{float, {1, 1, 12.3}, "12.3"}] = tokenize("12.3"),
-  [{float, {1, 1, 12.3}, "12.3"}, {';', {1, 5, 0}}] = tokenize("12.3;"),
-  [{eol, {1, 1, 2}}, {float, {3, 1, 12.3}, "12.3"}] = tokenize("\n\n12.3"),
-  [{float, {1, 3, 12.3}, "12.3"}, {float, {1, 9, 23.4}, "23.4"}] = tokenize("  12.3  23.4  "),
-  [{float, {1, 1, 12.3}, "00_12.3_00"}] = tokenize("00_12.3_00"),
+  [{flt, {1, 1, 12.3}, "12.3"}] = tokenize("12.3"),
+  [{flt, {1, 1, 12.3}, "12.3"}, {';', {1, 5, 0}}] = tokenize("12.3;"),
+  [{eol, {1, 1, 2}}, {flt, {3, 1, 12.3}, "12.3"}] = tokenize("\n\n12.3"),
+  [{flt, {1, 3, 12.3}, "12.3"}, {flt, {1, 9, 23.4}, "23.4"}] = tokenize("  12.3  23.4  "),
+  [{flt, {1, 1, 12.3}, "00_12.3_00"}] = tokenize("00_12.3_00"),
   OversizedFloat = string:copies("9", 310) ++ ".0",
   {1, 1, "invalid float number ", OversizedFloat} = tokenize_error(OversizedFloat).
 
@@ -127,7 +127,7 @@ newline_test() ->
    {'.', {2, 1, nil}},
    {identifier, {2, 2, nil}, bar}]  = tokenize("foo\n.bar"),
   [{int, {1, 1, 1}, "1"},
-   {two_op, {2, 1, 1}, '++'},
+   {concat_op, {2, 1, 1}, '++'},
    {int, {2, 3, 2}, "2"}]  = tokenize("1\n++2").
 
 dot_newline_operator_test() ->
@@ -167,10 +167,13 @@ empty_string_test() ->
   [{bin_string, {1, 1, nil}, [<<>>]}] = tokenize("\"\""),
   [{list_string, {1, 1, nil}, [<<>>]}] = tokenize("''").
 
-addadd_test() ->
+concat_test() ->
   [{identifier, {1, 1, nil}, x},
-   {two_op, {1, 3, nil}, '++'},
-   {identifier, {1, 6, nil}, y}] = tokenize("x ++ y").
+   {concat_op, {1, 3, nil}, '++'},
+   {identifier, {1, 6, nil}, y}] = tokenize("x ++ y"),
+  [{identifier, {1, 1, nil}, x},
+   {concat_op, {1, 3, nil}, '+++'},
+   {identifier, {1, 7, nil}, y}] = tokenize("x +++ y").
 
 space_test() ->
   [{op_identifier, {1, 1, nil}, foo},
@@ -190,7 +193,7 @@ chars_test() ->
 
 interpolation_test() ->
   [{bin_string, {1, 1, nil}, [<<"f">>, {{1, 3, nil},{1, 7, nil}, [{identifier, {1, 5, nil}, oo}]}]},
-   {two_op, {1, 10, nil}, '<>'},
+   {concat_op, {1, 10, nil}, '<>'},
    {bin_string, {1, 13, nil}, [<<>>]}] = tokenize("\"f#{oo}\" <> \"\"").
 
 capture_test() ->
@@ -213,17 +216,21 @@ vc_merge_conflict_test() ->
     tokenize_error("<<<<<<< HEAD\n[1, 2, 3]").
 
 sigil_terminator_test() ->
-  [{sigil, {1, 1, nil}, 114, [<<"foo">>], [], <<"/">>}] = tokenize("~r/foo/"),
-  [{sigil, {1, 1, nil}, 114, [<<"foo">>], [], <<"[">>}] = tokenize("~r[foo]"),
-  [{sigil, {1, 1, nil}, 114, [<<"foo">>], [], <<"\"">>}] = tokenize("~r\"foo\""),
-  [{sigil, {1, 1, nil}, 114, [<<"foo">>], [], <<"/">>},
+  [{sigil, {1, 1, nil}, 114, [<<"foo">>], "", nil, <<"/">>}] = tokenize("~r/foo/"),
+  [{sigil, {1, 1, nil}, 114, [<<"foo">>], "", nil, <<"[">>}] = tokenize("~r[foo]"),
+  [{sigil, {1, 1, nil}, 114, [<<"foo">>], "", nil, <<"\"">>}] = tokenize("~r\"foo\""),
+  [{sigil, {1, 1, nil}, 114, [<<"foo">>], "", nil, <<"/">>},
    {comp_op, {1, 9, nil}, '=='},
    {identifier, {1, 12, nil}, bar}] = tokenize("~r/foo/ == bar"),
-  [{sigil, {1, 1, nil}, 114, [<<"foo">>], "iu", <<"/">>},
+  [{sigil, {1, 1, nil}, 114, [<<"foo">>], "iu", nil, <<"/">>},
    {comp_op, {1, 11, nil}, '=='},
-   {identifier, {1, 14, nil}, bar}] = tokenize("~r/foo/iu == bar"),
-  [{sigil, {1, 1, nil}, 83, [<<"sigil heredoc\n">>], [], <<"\"\"\"">>}] = tokenize("~S\"\"\"\nsigil heredoc\n\"\"\""),
-  [{sigil, {1, 1, nil}, 83, [<<"sigil heredoc\n">>], [], <<"'''">>}] = tokenize("~S'''\nsigil heredoc\n'''").
+   {identifier, {1, 14, nil}, bar}] = tokenize("~r/foo/iu == bar").
+
+sigil_heredoc_test() ->
+  [{sigil, {1, 1, nil}, 83, [<<"sigil heredoc\n">>], "", 0, <<"\"\"\"">>}] = tokenize("~S\"\"\"\nsigil heredoc\n\"\"\""),
+  [{sigil, {1, 1, nil}, 83, [<<"sigil heredoc\n">>], "", 0, <<"'''">>}] = tokenize("~S'''\nsigil heredoc\n'''"),
+  [{sigil, {1, 1, nil}, 83, [<<"sigil heredoc\n">>], "", 2, <<"\"\"\"">>}] = tokenize("~S\"\"\"\n  sigil heredoc\n  \"\"\""),
+  [{sigil, {1, 1, nil}, 115, [<<"sigil heredoc\n">>], "", 2, <<"\"\"\"">>}] = tokenize("~s\"\"\"\n  sigil heredoc\n  \"\"\"").
 
 invalid_sigil_delimiter_test() ->
   {1, 1, "invalid sigil delimiter: ", Message} = tokenize_error("~s\\"),

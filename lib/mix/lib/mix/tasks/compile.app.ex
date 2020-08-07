@@ -20,11 +20,11 @@ defmodule Mix.Tasks.Compile.App do
     * `:extra_applications` - a list of OTP applications
       your application depends on which are not included in `:deps`
       (usually defined in `deps/0` in your `mix.exs`). For example,
-      here you can declare a dependency on applications that ship with
-      Erlang/OTP or Elixir, like `:crypto` or `:logger`, but anything in
-      the code path works. Mix guarantees that these applications and
-      the rest of your runtime dependencies are started before your
-      application starts.
+      here you can declare a dependency on applications that ship
+      with Erlang/OTP or Elixir, like `:crypto` or `:logger`.
+      Optional extra applications can be declared as a tuple, such
+      as `{:ex_unit, :optional}`. Mix guarantees all non-optional
+      applications are started before your application starts.
 
     * `:registered` - the name of all registered processes in the
       application. If your application defines a local GenServer
@@ -41,12 +41,11 @@ defmodule Mix.Tasks.Compile.App do
 
       def application do
         [
-          extra_applications: [:logger, :crypto],
+          extra_applications: [:logger, :crypto, ex_unit: :optional],
           env: [key: :value],
           registered: [MyServer]
         ]
       end
-
 
   Other options include:
 
@@ -137,54 +136,56 @@ defmodule Mix.Tasks.Compile.App do
     validate_version(version)
 
     path = Keyword.get_lazy(opts, :compile_path, &Mix.Project.compile_path/0)
-    mods = modules_from(Path.wildcard("#{path}/*.beam")) |> Enum.sort()
+    modules = modules_from(Path.wildcard("#{path}/*.beam")) |> Enum.sort()
 
     target = Path.join(path, "#{app}.app")
     source = Mix.Project.config_mtime()
 
-    if opts[:force] || Mix.Utils.stale?([source], [target]) || modules_changed?(mods, target) do
-      best_guess = [
-        description: to_charlist(config[:description] || app),
-        modules: mods,
-        registered: [],
-        vsn: to_charlist(version)
-      ]
+    current_properties = current_app_properties(target)
+    compile_env = load_compile_env(current_properties)
 
+    if opts[:force] || Mix.Utils.stale?([source], [target]) ||
+         app_changed?(current_properties, modules, compile_env) do
       properties =
-        if function_exported?(project, :application, 0) do
-          project_application = project.application
+        [
+          description: to_charlist(config[:description] || app),
+          modules: modules,
+          registered: [],
+          vsn: to_charlist(version)
+        ]
+        |> merge_project_application(project)
+        |> validate_properties!()
+        |> handle_extra_applications(config)
+        |> add_compile_env(compile_env)
 
-          unless Keyword.keyword?(project_application) do
-            Mix.raise(
-              "Application configuration returned from application/0 should be a keyword list"
-            )
-          end
-
-          Keyword.merge(best_guess, project_application)
-        else
-          best_guess
-        end
-
-      properties = ensure_correct_properties(properties, config)
       contents = :io_lib.format("~p.~n", [{:application, app, properties}])
 
       Mix.Project.ensure_structure()
       File.write!(target, IO.chardata_to_string(contents))
       Mix.shell().info("Generated #{app} app")
-      :ok
+      {:ok, []}
     else
-      :noop
+      {:noop, []}
     end
   end
 
-  defp modules_changed?(mods, target) do
+  defp current_app_properties(target) do
     case :file.consult(target) do
-      {:ok, [{:application, _app, properties}]} ->
-        properties[:modules] != mods
-
-      _ ->
-        false
+      {:ok, [{:application, _app, properties}]} -> properties
+      _ -> []
     end
+  end
+
+  defp load_compile_env(current_properties) do
+    case Mix.ProjectStack.compile_env(:unset) do
+      :unset -> Keyword.get(current_properties, :compile_env, [])
+      list -> list
+    end
+  end
+
+  defp app_changed?(properties, mods, compile_env) do
+    Keyword.get(properties, :modules, []) != mods or
+      Keyword.get(properties, :compile_env, []) != compile_env
   end
 
   defp validate_app(app) when is_atom(app), do: :ok
@@ -198,7 +199,9 @@ defmodule Mix.Tasks.Compile.App do
     ensure_present(:version, version)
 
     unless is_binary(version) and match?({:ok, _}, Version.parse(version)) do
-      Mix.raise("Expected :version to be a SemVer version, got: #{inspect(version)}")
+      Mix.raise(
+        "Expected :version to be a valid Version, got: #{inspect(version)} (see the Version module for more information)"
+      )
     end
   end
 
@@ -212,17 +215,20 @@ defmodule Mix.Tasks.Compile.App do
     Enum.map(beams, &(&1 |> Path.basename() |> Path.rootname(".beam") |> String.to_atom()))
   end
 
-  defp ensure_correct_properties(properties, config) do
-    validate_properties!(properties)
-    {extra, properties} = Keyword.pop(properties, :extra_applications, [])
+  defp merge_project_application(best_guess, project) do
+    if function_exported?(project, :application, 0) do
+      project_application = project.application()
 
-    apps =
-      properties
-      |> Keyword.get(:applications)
-      |> Kernel.||(apps_from_prod_non_optional_deps(properties, config))
-      |> normalize_apps(extra, config)
+      unless Keyword.keyword?(project_application) do
+        Mix.raise(
+          "Application configuration returned from application/0 should be a keyword list"
+        )
+      end
 
-    Keyword.put(properties, :applications, apps)
+      Keyword.merge(best_guess, project_application)
+    else
+      best_guess
+    end
   end
 
   defp validate_properties!(properties) do
@@ -277,18 +283,18 @@ defmodule Mix.Tasks.Compile.App do
         end
 
       {:extra_applications, value} ->
-        unless is_list(value) and Enum.all?(value, &is_atom(&1)) do
+        unless is_list(value) and Enum.all?(value, &typed_app?(&1)) do
           Mix.raise(
-            "Application extra applications (:extra_applications) should be a list of atoms, got: " <>
-              inspect(value)
+            "Application extra applications (:extra_applications) should be a list of atoms or " <>
+              "{app, :required | :optional} pairs, got: " <> inspect(value)
           )
         end
 
       {:applications, value} ->
-        unless is_list(value) and Enum.all?(value, &is_atom(&1)) do
+        unless is_list(value) and Enum.all?(value, &typed_app?(&1)) do
           Mix.raise(
-            "Application applications (:applications) should be a list of atoms, got: " <>
-              inspect(value)
+            "Application applications (:applications) should be a list of atoms or " <>
+              "{app, :required | :optional} pairs, got: " <> inspect(value)
           )
         end
 
@@ -322,31 +328,39 @@ defmodule Mix.Tasks.Compile.App do
       _ ->
         :ok
     end)
+
+    properties
   end
 
-  defp apps_from_prod_non_optional_deps(properties, config) do
+  defp typed_app?(app) when is_atom(app), do: true
+  defp typed_app?({app, type}) when is_atom(app) and type in [:required, :optional], do: true
+  defp typed_app?(_), do: false
+
+  defp add_compile_env(properties, []), do: properties
+  defp add_compile_env(properties, compile_env), do: [compile_env: compile_env] ++ properties
+
+  defp handle_extra_applications(properties, config) do
+    {extra, properties} = Keyword.pop(properties, :extra_applications, [])
+
+    {required, _optional} =
+      project_apps(properties, config, extra, fn ->
+        apps_from_runtime_prod_deps(properties, config)
+      end)
+
+    # TODO: Also store optional applications once support lands in Erlang/OTP 24+
+    Keyword.put(properties, :applications, required)
+  end
+
+  defp apps_from_runtime_prod_deps(properties, config) do
     included_applications = Keyword.get(properties, :included_applications, [])
-    non_runtime_deps = non_runtime_deps(config)
 
-    for %{app: app, opts: opts, top_level: true} <- Mix.Dep.cached(),
-        not Keyword.get(opts, :optional, false),
-        not Map.has_key?(non_runtime_deps, app),
+    for {app, opts} <- Mix.Dep.deps_opts(config),
+        runtime_app?(opts),
         app not in included_applications,
-        do: app
+        do: {app, if(Keyword.get(opts, :optional, false), do: :optional, else: :required)}
   end
 
-  defp non_runtime_deps(config) do
-    for config_dep <- Keyword.get(config, :deps, []),
-        not runtime_dep?(config_dep),
-        do: {elem(config_dep, 0), true},
-        into: %{}
-  end
-
-  defp runtime_dep?({_app, opts}) when is_list(opts), do: runtime_opts?(opts)
-  defp runtime_dep?({_app, _req, opts}) when is_list(opts), do: runtime_opts?(opts)
-  defp runtime_dep?(_), do: true
-
-  defp runtime_opts?(opts) do
+  defp runtime_app?(opts) do
     Keyword.get(opts, :runtime, true) and Keyword.get(opts, :app, true) and matching_only?(opts)
   end
 
@@ -357,15 +371,45 @@ defmodule Mix.Tasks.Compile.App do
     end
   end
 
-  defp normalize_apps(apps, extra, config) do
-    Enum.uniq([:kernel, :stdlib] ++ language_app(config) ++ extra ++ apps)
+  ## Helpers for loading and manipulating apps
+
+  @doc false
+  # Entry point function used by app tracer, app loader, etc.
+  def project_apps(config) do
+    project = Mix.Project.get!()
+
+    properties =
+      if function_exported?(project, :application, 0), do: project.application(), else: []
+
+    extra =
+      Keyword.get(properties, :included_applications, []) ++
+        Keyword.get(properties, :extra_applications, [])
+
+    project_apps(properties, config, extra, fn ->
+      config |> Mix.Dep.deps_opts() |> Keyword.keys()
+    end)
   end
 
-  defp language_app(config) do
-    case Keyword.fetch(config, :language) do
-      {:ok, :elixir} -> [:elixir]
-      {:ok, :erlang} -> []
-      :error -> [:elixir]
+  defp project_apps(properties, config, extra, deps_loader) do
+    apps = Keyword.get(properties, :applications) || deps_loader.()
+    {required, optional} = split_by_type(extra ++ apps)
+    required = Enum.uniq(language_apps(config) ++ Enum.reverse(required))
+    optional = Enum.uniq(Enum.reverse(optional -- required))
+    {required, optional}
+  end
+
+  defp split_by_type(apps) do
+    Enum.reduce(apps, {[], []}, fn
+      app, {required, optional} when is_atom(app) -> {[app | required], optional}
+      {app, :required}, {required, optional} -> {[app | required], optional}
+      {app, :optional}, {required, optional} -> {required, [app | optional]}
+    end)
+  end
+
+  defp language_apps(config) do
+    case Keyword.get(config, :language, :elixir) do
+      :elixir -> [:kernel, :stdlib, :elixir]
+      :erlang -> [:kernel, :stdlib]
     end
   end
 end

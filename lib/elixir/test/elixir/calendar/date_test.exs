@@ -6,19 +6,46 @@ defmodule DateTest do
   use ExUnit.Case, async: true
   doctest Date
 
-  test "to_string/1" do
-    assert to_string(~D[2000-01-01]) == "2000-01-01"
+  test "sigil_D" do
+    assert ~D[2000-01-01] ==
+             %Date{calendar: Calendar.ISO, year: 2000, month: 1, day: 1}
 
-    date = %{~D[2000-01-01] | calendar: FakeCalendar}
-    assert to_string(date) == "boom"
+    assert ~D[20001-01-01 Calendar.Holocene] ==
+             %Date{calendar: Calendar.Holocene, year: 20001, month: 1, day: 1}
+
+    assert_raise ArgumentError,
+                 ~s/cannot parse "2000-50-50" as Date for Calendar.ISO, reason: :invalid_date/,
+                 fn -> Code.eval_string("~D[2000-50-50]") end
+
+    assert_raise ArgumentError,
+                 ~s/cannot parse "2000-50-50 notalias" as Date for Calendar.ISO, reason: :invalid_format/,
+                 fn -> Code.eval_string("~D[2000-50-50 notalias]") end
+
+    assert_raise ArgumentError,
+                 ~s/cannot parse "20001-50-50" as Date for Calendar.Holocene, reason: :invalid_date/,
+                 fn -> Code.eval_string("~D[20001-50-50 Calendar.Holocene]") end
+
+    assert_raise UndefinedFunctionError, fn ->
+      Code.eval_string("~D[2000-01-01 UnknownCalendar]")
+    end
   end
 
-  test "Kernel.inspect/1" do
+  test "to_string/1" do
+    date = ~D[2000-01-01]
+    assert to_string(date) == "2000-01-01"
+    assert Date.to_string(date) == "2000-01-01"
+    assert Date.to_string(Map.from_struct(date)) == "2000-01-01"
+
+    assert to_string(%{date | calendar: FakeCalendar}) == "1/1/2000"
+    assert Date.to_string(%{date | calendar: FakeCalendar}) == "1/1/2000"
+  end
+
+  test "inspect/1" do
     assert inspect(~D[2000-01-01]) == "~D[2000-01-01]"
     assert inspect(~D[-0100-12-31]) == "~D[-0100-12-31]"
 
     date = %{~D[2000-01-01] | calendar: FakeCalendar}
-    assert inspect(date) == "%Date{calendar: FakeCalendar, day: 1, month: 1, year: 2000}"
+    assert inspect(date) == "~D[1/1/2000 FakeCalendar]"
   end
 
   test "compare/2" do
@@ -44,14 +71,51 @@ defmodule DateTest do
   end
 
   test "day_of_week/1" do
-    assert Date.day_of_week(~D[2016-10-31]) == 1
-    assert Date.day_of_week(~D[2016-11-01]) == 2
-    assert Date.day_of_week(~D[2016-11-02]) == 3
-    assert Date.day_of_week(~D[2016-11-03]) == 4
-    assert Date.day_of_week(~D[2016-11-04]) == 5
-    assert Date.day_of_week(~D[2016-11-05]) == 6
-    assert Date.day_of_week(~D[2016-11-06]) == 7
-    assert Date.day_of_week(~D[2016-11-07]) == 1
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 10, 31)) == 1
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 01)) == 2
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 02)) == 3
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 03)) == 4
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 04)) == 5
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 05)) == 6
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 06)) == 7
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 07)) == 1
+
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 10, 30), :sunday) == 1
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 10, 31), :sunday) == 2
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 01), :sunday) == 3
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 02), :sunday) == 4
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 03), :sunday) == 5
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 04), :sunday) == 6
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 05), :sunday) == 7
+    assert Date.day_of_week(Calendar.Holocene.date(2016, 11, 06), :sunday) == 1
+  end
+
+  test "beginning_of_week" do
+    assert Date.beginning_of_week(Calendar.Holocene.date(2020, 07, 11)) ==
+             Calendar.Holocene.date(2020, 07, 06)
+
+    assert Date.beginning_of_week(Calendar.Holocene.date(2020, 07, 06)) ==
+             Calendar.Holocene.date(2020, 07, 06)
+
+    assert Date.beginning_of_week(Calendar.Holocene.date(2020, 07, 11), :sunday) ==
+             Calendar.Holocene.date(2020, 07, 05)
+
+    assert Date.beginning_of_week(Calendar.Holocene.date(2020, 07, 11), :saturday) ==
+             Calendar.Holocene.date(2020, 07, 11)
+  end
+
+  test "end_of_week" do
+    assert Date.end_of_week(Calendar.Holocene.date(2020, 07, 11)) ==
+             Calendar.Holocene.date(2020, 07, 12)
+
+    assert Date.end_of_week(Calendar.Holocene.date(2020, 07, 05)) ==
+             Calendar.Holocene.date(2020, 07, 05)
+
+    assert Date.end_of_week(Calendar.Holocene.date(2020, 07, 05), :sunday) ==
+             Calendar.Holocene.date(2020, 07, 11)
+
+    assert Date.end_of_week(Calendar.Holocene.date(2020, 07, 05), :saturday) ==
+             Calendar.Holocene.date(2020, 07, 10)
   end
 
   test "convert/2" do

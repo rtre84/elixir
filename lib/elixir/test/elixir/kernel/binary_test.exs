@@ -56,6 +56,11 @@ defmodule Kernel.BinaryTest do
     assert ?\ゆ == 12422
   end
 
+  test "size outside match" do
+    x = 16
+    assert <<0::size(x)>> == <<0, 0>>
+  end
+
   test "string concatenation as match" do
     "foo" <> x = "foobar"
     assert x == "bar"
@@ -193,10 +198,6 @@ defmodule Kernel.BinaryTest do
 
     assert_raise CompileError, message, fn ->
       Code.eval_string(~s[<<'foo'::binary>>])
-    end
-
-    assert_raise ArgumentError, fn ->
-      Code.eval_string(~s[<<1::4>> <> "foo"])
     end
   end
 

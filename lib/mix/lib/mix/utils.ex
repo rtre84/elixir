@@ -15,7 +15,7 @@ defmodule Mix.Utils do
   stored there.
   """
   def mix_home do
-    mix_home_xdg_lookup("XDG_DATA_HOME")
+    mix_home_xdg_lookup(:user_data)
   end
 
   @doc """
@@ -23,41 +23,25 @@ defmodule Mix.Utils do
 
   Possible locations:
 
-   * `~/.mix`
-   * `MIX_HOME`
-   * `XDG_CONFIG_HOME/mix`
+     * `MIX_HOME`
+     * `XDG_CONFIG_HOME/mix` (if `MIX_XDG` is set)
+     * `~/.mix`
 
   """
   def mix_config do
-    mix_home_xdg_lookup("XDG_CONFIG_HOME")
+    mix_home_xdg_lookup(:user_config)
   end
 
   defp mix_home_xdg_lookup(xdg) do
-    case {System.get_env("MIX_HOME"), System.get_env(xdg)} do
-      {directory, _} when is_binary(directory) -> directory
-      {nil, directory} when is_binary(directory) -> Path.join(directory, "mix")
-      {nil, nil} -> Path.expand("~/.mix")
-    end
-  end
+    cond do
+      dir = System.get_env("MIX_HOME") ->
+        dir
 
-  @doc """
-  Gets all paths defined in the MIX_PATH env variable.
+      System.get_env("MIX_XDG") in ["1", "true"] ->
+        :filename.basedir(xdg, "mix", %{os: :linux})
 
-  `MIX_PATH` may contain multiple paths. If on Windows, those
-  paths should be separated by `;`, if on Unix systems, use `:`.
-  """
-  def mix_paths do
-    if path = System.get_env("MIX_PATH") do
-      String.split(path, path_separator())
-    else
-      []
-    end
-  end
-
-  defp path_separator do
-    case :os.type() do
-      {:win32, _} -> ";"
-      {:unix, _} -> ":"
+      true ->
+        Path.expand("~/.mix")
     end
   end
 
@@ -251,7 +235,7 @@ defmodule Mix.Utils do
     |> Enum.uniq()
   end
 
-  @type tree_node :: {name :: String.Chars.t(), edge_info :: String.Chars.t()}
+  @type formatted_node :: {name :: String.Chars.t(), edge_info :: String.Chars.t()}
 
   @doc """
   Prints the given tree according to the callback.
@@ -259,7 +243,7 @@ defmodule Mix.Utils do
   The callback will be invoked for each node and it
   must return a `{printed, children}` tuple.
   """
-  @spec print_tree([tree_node], (tree_node -> {tree_node, [tree_node]}), keyword) :: :ok
+  @spec print_tree([node], (node -> {formatted_node, [node]}), keyword) :: :ok when node: term()
   def print_tree(nodes, callback, opts \\ []) do
     pretty? =
       case Keyword.get(opts, :format) do
@@ -268,36 +252,38 @@ defmodule Mix.Utils do
         _other -> elem(:os.type(), 0) != :win32
       end
 
-    print_tree(nodes, _depth = [], _parent = nil, _seen = MapSet.new(), pretty?, callback)
+    print_tree(nodes, _depth = [], _seen = %{}, pretty?, callback)
     :ok
   end
 
-  defp print_tree(_nodes = [], _depth, _parent, seen, _pretty, _callback) do
+  defp print_tree(nodes, depth, seen, pretty?, callback) do
+    # We perform a breadth first traversal so we always show a dependency
+    # a node with its children as high as possible in tree. This helps avoid
+    # very deep trees.
+    {nodes, seen} =
+      Enum.flat_map_reduce(nodes, seen, fn node, seen ->
+        {{name, info}, children} = callback.(node)
+
+        if Map.has_key?(seen, name) do
+          {[{name, info, []}], seen}
+        else
+          {[{name, info, children}], Map.put(seen, name, true)}
+        end
+      end)
+
+    print_each_node(nodes, depth, seen, pretty?, callback)
+  end
+
+  defp print_each_node([], _depth, seen, _pretty?, _callback) do
     seen
   end
 
-  defp print_tree([node | nodes], depth, parent, seen, pretty?, callback) do
-    {{name, info}, children} = callback.(node)
-    key = {parent, name}
+  defp print_each_node([{name, info, children} | nodes], depth, seen, pretty?, callback) do
+    info = if(info, do: " #{info}", else: "")
+    Mix.shell().info("#{depth(pretty?, depth)}#{prefix(pretty?, depth, nodes)}#{name}#{info}")
 
-    if MapSet.member?(seen, key) do
-      seen
-    else
-      info = if(info, do: " #{info}", else: "")
-      Mix.shell().info("#{depth(pretty?, depth)}#{prefix(pretty?, depth, nodes)}#{name}#{info}")
-
-      seen =
-        print_tree(
-          children,
-          [nodes != [] | depth],
-          name,
-          MapSet.put(seen, key),
-          pretty?,
-          callback
-        )
-
-      print_tree(nodes, depth, parent, seen, pretty?, callback)
-    end
+    seen = print_tree(children, [nodes != [] | depth], seen, pretty?, callback)
+    print_each_node(nodes, depth, seen, pretty?, callback)
   end
 
   defp depth(_pretty?, []), do: ""
@@ -324,10 +310,11 @@ defmodule Mix.Utils do
   @spec write_dot_graph!(
           Path.t(),
           String.t(),
-          [tree_node],
-          (tree_node -> {tree_node, [tree_node]}),
+          [node],
+          (node -> {formatted_node, [node]}),
           keyword
         ) :: :ok
+        when node: term()
   def write_dot_graph!(path, title, nodes, callback, _opts \\ []) do
     {dot, _} = build_dot_graph(make_ref(), nodes, MapSet.new(), callback)
     File.write!(path, ["digraph ", quoted(title), " {\n", dot, "}\n"])
@@ -507,7 +494,9 @@ defmodule Mix.Utils do
   ## Options
 
     * `:sha512` - checks against the given SHA-512 checksum. Returns
-      `{:checksum, message}` in case it fails
+      `{:checksum, message}` in case it fails. This option is required
+      for URLs unless the `:unsafe_uri` is given (WHICH IS NOT RECOMMENDED
+      unless another security mechanism is in place, such as private keys)
 
     * `:timeout` - times out the request after the given milliseconds.
       Returns `{:remote, timeout_message}` if it fails. Defaults to 60
@@ -523,7 +512,14 @@ defmodule Mix.Utils do
   def read_path(path, opts \\ []) do
     cond do
       url?(path) ->
-        task = Task.async(fn -> read_httpc(path) |> checksum(opts) end)
+        task =
+          Task.async(fn ->
+            with :ok <- require_checksum(opts),
+                 {:ok, binary} <- read_httpc(path) do
+              checksum(binary, opts)
+            end
+          end)
+
         timeout = Keyword.get(opts, :timeout, 60_000)
 
         case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
@@ -532,7 +528,9 @@ defmodule Mix.Utils do
         end
 
       file?(path) ->
-        read_file(path) |> checksum(opts)
+        with {:ok, binary} <- read_file(path) do
+          checksum(binary, opts)
+        end
 
       true ->
         :badpath
@@ -541,8 +539,21 @@ defmodule Mix.Utils do
 
   @checksums [:sha512]
 
-  defp checksum({:ok, binary} = return, opts) do
-    Enum.find_value(@checksums, return, fn hash ->
+  defp require_checksum(opts) do
+    cond do
+      Keyword.take(opts, @checksums) != [] ->
+        :ok
+
+      Keyword.get(opts, :unsafe_uri) ->
+        :ok
+
+      true ->
+        {:checksum, "fetching from URIs require a checksum to be given"}
+    end
+  end
+
+  defp checksum(binary, opts) do
+    Enum.find_value(@checksums, {:ok, binary}, fn hash ->
       with expected when expected != nil <- opts[hash],
            actual when actual != expected <- hexhash(binary, hash) do
         message = """
@@ -557,10 +568,6 @@ defmodule Mix.Utils do
         _ -> nil
       end
     end)
-  end
-
-  defp checksum({_, _} = error, _opts) do
-    error
   end
 
   defp hexhash(binary, hash) do
